@@ -58,6 +58,7 @@ Echinus/
         geometry.py           all the coordinate maths, in one file
         tracker.py            crossing bearings into positions
         simulator.py          fake nodes, for working without hardware
+        static/scene.js       the 3D view: cones, contacts, bearing lines
         static/, templates/   the dashboard
 ```
 
@@ -172,6 +173,25 @@ arrived before you placed it are kept, but can't be used — only new ones.
 
 A single node seeing something proves a direction, not a position — so one
 node alone never produces a contact. Two are the minimum; three make it solid.
+
+### The 3D view
+
+The crossing that makes a contact happens in the air, and a map has nowhere to
+put height: a view cone flattens to a patch of ground, and a drone at 2 km sits
+on the same pixel as one on a roof. The **3D** toggle beside the status line
+draws the same records — the same node colours, the same trail window — in
+metres east, north and up, with a kilometre grid at the nodes' own altitude.
+
+- each node's view pyramid, drawn from `geometry.view_cone`: the shape the
+  map's footprint is the shadow of, so a camera aimed at the sky reaches up
+- every contact on a line down to the grid, ringed in the colours of the nodes
+  that saw it and fading over the trail window, exactly as on the map
+- clicking a contact — in either view, or from "see it in 3D" in its map popup —
+  draws the lines of bearing that crossed to make it, one per node, in that
+  node's colour
+
+Aiming a camera previews live in both views: type a yaw or a pitch and the flat
+footprint and the 3D cone both follow, because both come from the Server.
 
 ### Hardware per node
 

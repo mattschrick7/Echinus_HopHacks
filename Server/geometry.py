@@ -209,6 +209,40 @@ def view_footprint(
     ]
 
 
+def view_cone(
+    lat: float,
+    lon: float,
+    alt_m: float,
+    yaw_deg: float,
+    pitch_deg: float,
+    roll_deg: float = 0.0,
+    fov_h_deg: float = DEFAULT_FOV_H_DEG,
+    fov_v_deg: float = DEFAULT_FOV_V_DEG,
+    range_m: float = DETECTION_RANGE_M,
+) -> list[tuple[float, float, float]]:
+    """The same view pyramid, un-flattened: its four far corners in 3D.
+
+    view_footprint drops this shape onto the ground because a map has nowhere
+    to put the height. The 3D view draws the pyramid itself — apex at the
+    node, these four points `range_m` away — so a camera aimed at the sky
+    shows as a cone reaching up rather than a patch around the node.
+
+    Corners come back in the order the camera sees them (bottom-left,
+    bottom-right, top-right, top-left), so walking them in order and closing
+    the loop traces the far face.
+    """
+    forward, right, up = camera_axes(yaw_deg, pitch_deg, roll_deg)
+    half_x = math.tan(math.radians(fov_h_deg) / 2.0)
+    half_y = math.tan(math.radians(fov_v_deg) / 2.0)
+
+    corners = []
+    for x, y in ((-half_x, -half_y), (half_x, -half_y), (half_x, half_y), (-half_x, half_y)):
+        direction = forward + right * x + up * y
+        offset = range_m * direction / np.linalg.norm(direction)
+        corners.append(enu_to_geodetic(offset, lat, lon, alt_m))
+    return corners
+
+
 def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Andrew's monotone chain. Counter-clockwise, no repeated first point."""
     points = sorted(set(points))

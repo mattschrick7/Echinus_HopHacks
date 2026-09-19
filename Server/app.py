@@ -27,7 +27,13 @@ from fastapi.staticfiles import StaticFiles
 import db
 import ingest
 import tracker
-from geometry import DEFAULT_FOV_H_DEG, DEFAULT_FOV_V_DEG, DETECTION_RANGE_M, view_footprint
+from geometry import (
+    DEFAULT_FOV_H_DEG,
+    DEFAULT_FOV_V_DEG,
+    DETECTION_RANGE_M,
+    view_cone,
+    view_footprint,
+)
 
 HERE = Path(__file__).parent
 
@@ -88,10 +94,16 @@ async def hub_socket(ws: WebSocket) -> None:
 # ── operator API ─────────────────────────────────────────────────────────────
 
 def with_footprint(node: dict | None) -> dict | None:
-    """Attach the outline of what the node's camera can see, for the map."""
+    """Attach what the node's camera can see: the outline the map draws flat,
+    and the same pyramid's far corners for the 3D view to draw in the air."""
     if node and node["configured"]:
         node["footprint"] = view_footprint(
             node["lat"], node["lon"], node["yaw_deg"], node["pitch_deg"], node["roll_deg"],
+            node["fov_h_deg"], node["fov_v_deg"], node["range_m"],
+        )
+        node["view_cone"] = view_cone(
+            node["lat"], node["lon"], node["alt_m"],
+            node["yaw_deg"], node["pitch_deg"], node["roll_deg"],
             node["fov_h_deg"], node["fov_v_deg"], node["range_m"],
         )
     return node
@@ -110,6 +122,18 @@ def api_footprint(
 ) -> list[tuple[float, float]]:
     """The same outline for values not saved yet: the editor's live preview."""
     return view_footprint(lat, lon, yaw_deg, pitch_deg, roll_deg, fov_h_deg, fov_v_deg, range_m)
+
+
+@app.get("/api/view-cone")
+def api_view_cone(
+    lat: float, lon: float, yaw_deg: float, pitch_deg: float,
+    alt_m: float = 0.0, roll_deg: float = 0.0,
+    fov_h_deg: float = DEFAULT_FOV_H_DEG, fov_v_deg: float = DEFAULT_FOV_V_DEG,
+    range_m: float = DETECTION_RANGE_M,
+) -> list[tuple[float, float, float]]:
+    """And the 3D corners for those same unsaved values, for the 3D preview."""
+    return view_cone(lat, lon, alt_m, yaw_deg, pitch_deg, roll_deg,
+                     fov_h_deg, fov_v_deg, range_m)
 
 
 @app.post("/api/nodes")

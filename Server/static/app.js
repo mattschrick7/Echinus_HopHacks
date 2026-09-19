@@ -8,6 +8,11 @@
 // every contact is ringed in the colours of the nodes whose bearings crossed to
 // make it. Contacts fade out over the "trail" window and then disappear, so the
 // map shows where things are now rather than everywhere they have ever been.
+//
+// The same records also go to scene.js, which draws them in 3D with the height
+// left in — the map flattens a view cone to a patch of ground and a contact at
+// 2 km to a dot. The two views share colours, the trail window and a selection:
+// clicking a contact in either one opens it in the other.
 
 const POLL_MS = 2000;
 const OFFLINE_AFTER_MS = 5 * 60 * 1000; // no packet for 5 min = offline
@@ -36,6 +41,8 @@ const editor = el("editor");
 
 let editing = null;      // node_id currently open in the form, or null
 let latestNodes = [];    // the last node list from the server
+let latestContacts = []; // and the last contacts, for the 3D view's first build
+let selected = null;     // contact id being inspected in 3D, or null
 let picking = false;     // "pick on map" mode
 let fitted = false;      // only auto-zoom to the data once
 let nodeColour = {};     // node_id -> colour, rebuilt from every poll
@@ -131,6 +138,7 @@ function drawNodes(nodes) {
       .addTo(nodeLayer);
   }
 
+  Scene3D.setNodes(nodes, nodeColour); // ignored until the 3D view is opened
   if (editing) previewCone(); // a mid-edit redraw keeps the unsaved preview
 }
 
@@ -147,10 +155,17 @@ async function previewCone() {
 
   const seq = ++previewSeq;
   try {
-    const outline = await api(`/api/footprint?${new URLSearchParams(values)}`);
+    // The flat outline for the map and the pyramid's corners for the scene —
+    // both from the Server, so aiming a camera previews live in either view.
+    const query = new URLSearchParams({ ...values, alt_m: parseFloat(field("alt_m").value) || 0 });
+    const [outline, corners] = await Promise.all([
+      api(`/api/footprint?${query}`),
+      api(`/api/view-cone?${query}`),
+    ]);
     if (seq !== previewSeq || !cones[editing]) return;
     cones[editing].setLatLngs(outline);
     cones[editing].setStyle({ dashArray: values.pitch_deg < 0 ? "6 5" : null });
+    Scene3D.previewCone(editing, corners);
   } catch {
     // a half-typed value the Server rejects: keep the last good outline
   }
@@ -175,8 +190,16 @@ function contactPopup(contact) {
   return `<b>contact #${contact.id}</b>` + (number ? ` · <b>T-${number}</b>` : "") + `<br>` +
     `${contact.lat.toFixed(5)}, ${contact.lon.toFixed(5)}` +
     (contact.alt_m != null ? ` · ${contact.alt_m.toFixed(0)} m` : "") +
-    `<br>${names}<br><small>${contact.observed_at} UTC</small>`;
+    `<br>${names}<br><small>${contact.observed_at} UTC</small>` +
+    `<br><button type="button" class="ghost small to-3d" data-contact="${contact.id}">` +
+    `see it in 3D</button>`;
 }
+
+// Popups are rebuilt as contacts come and go, so listen once, up here.
+document.addEventListener("click", (event) => {
+  const button = event.target.closest?.(".to-3d");
+  if (button) showInScene(Number(button.dataset.contact));
+});
 
 // Contacts are updated in place rather than redrawn, so they can fade smoothly
 // (a CSS transition on opacity) and an open popup survives the next poll.
@@ -205,7 +228,61 @@ function drawContacts(contacts) {
   for (const [id, m] of contactMarkers) {
     if (!live.has(id)) { m.remove(); contactMarkers.delete(id); }
   }
+
+  markSelected();
+  Scene3D.setContacts(contacts, trail, nodeColour); // ignored until 3D is opened
 }
+
+// ── 3D view ──────────────────────────────────────────────────────────────────
+
+function setView(which) {
+  document.body.dataset.view = which;
+  el("view-2d").classList.toggle("active", which === "2d");
+  el("view-3d").classList.toggle("active", which === "3d");
+
+  if (which !== "3d") {
+    Scene3D.hide();
+    return;
+  }
+  // Built the first time it is asked for: no WebGL context for an operator who
+  // only ever wants the map.
+  if (!Scene3D.isReady()) {
+    Scene3D.init(el("scene"), {
+      onContact: selectContact,
+      onNode: openEditor,        // same as clicking a node on the map
+      onEmpty: () => selectContact(null),
+    });
+    Scene3D.setNodes(latestNodes, nodeColour);
+    Scene3D.setContacts(latestContacts, trailSeconds(), nodeColour);
+    Scene3D.setSelected(selected);
+  }
+  Scene3D.show();
+}
+
+// The selected contact is ringed white on the map and carries its bearing
+// lines in the scene, so both views point at the same record.
+function selectContact(contactId) {
+  selected = contactId;
+  Scene3D.setSelected(contactId);
+  markSelected();
+}
+
+function markSelected() {
+  for (const [id, m] of contactMarkers) {
+    m.getElement()?.firstElementChild?.classList.toggle("selected", id === selected);
+  }
+}
+
+function showInScene(contactId) {
+  selectContact(contactId);
+  map.closePopup();
+  setView("3d");
+  Scene3D.focus(contactId);
+}
+
+el("view-2d").onclick = () => setView("2d");
+el("view-3d").onclick = () => setView("3d");
+el("reframe").onclick = () => Scene3D.reframe();
 
 function fitOnce(nodes, contacts) {
   if (fitted) return;
@@ -509,6 +586,7 @@ async function poll() {
     ]);
     targetNumber = Object.fromEntries(targets.map((t) => [t.id, t.number]));
     latestNodes = nodes;
+    latestContacts = contacts;
     assignColours(nodes);
 
     // The cones only care about placement, so ignore last_seen ticking over.
@@ -542,5 +620,6 @@ async function poll() {
   }
 }
 
+setView("2d");
 poll();
 setInterval(poll, POLL_MS);
