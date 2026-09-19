@@ -1,0 +1,16 @@
+[Unit]
+Description=Echinus hub (LoRa to websocket relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%REPO_DIR%
+ExecStart=%REPO_DIR%/.venv/bin/echinus-hub --config %REPO_DIR%/Hub/hub.toml
+# The relay reconnects on its own, but restart if the process itself dies.
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

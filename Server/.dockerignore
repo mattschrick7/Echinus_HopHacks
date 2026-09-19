@@ -1,0 +1,7 @@
+# The image is built from Server/ alone — it shares no code with the Pis.
+__pycache__/
+*.py[cod]
+tests/
+*.db
+*.db-wal
+*.db-shm

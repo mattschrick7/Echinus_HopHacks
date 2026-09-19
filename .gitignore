@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# SQLite (the server's data lives in a Docker volume, not the repo)
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / harness config
+.claude/
+.vscode/
+.idea/
+
+# Per-machine config — copy the .example files and edit
+Node/node.toml
+Hub/hub.toml
+
+# Waveshare's LoRa driver, fetched by the install scripts (not ours to vendor)
+sx126x.py
+
+# Test footage captured on a node
+Node/testing/samples/*
+!Node/testing/samples/.gitkeep

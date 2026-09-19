@@ -1,0 +1,16 @@
+[Unit]
+Description=Echinus field node (camera motion detection over LoRa)
+# Detection timestamps come from the system clock, so wait for NTP.
+After=network-online.target systemd-time-sync.target
+Wants=network-online.target systemd-time-sync.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%REPO_DIR%
+ExecStart=%REPO_DIR%/.venv/bin/echinus-node --config %REPO_DIR%/Node/node.toml
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

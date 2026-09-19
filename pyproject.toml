@@ -1,0 +1,26 @@
+# uv workspace root. The shared .venv lives next to this file.
+#
+#   uv sync         # everything, for development on a laptop
+#   uv run pytest   # all tests, all three components
+#
+# On a Pi, the deploy scripts sync only the one package that machine runs.
+
+[tool.uv.workspace]
+members = [
+    "shared/echinus-link",
+    "Node",
+    "Hub",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "numpy>=1.26",              # the Server's geometry and tracker
+    "opencv-python-headless>=4.9",  # camera fallback for laptop testing
+]
+
+[tool.pytest.ini_options]
+testpaths = ["shared", "Node", "Hub", "Server"]
+# The Server runs in Docker with its own directory on the path, so tests that
+# `import db` / `import geometry` need the same arrangement here.
+pythonpath = ["Server"]

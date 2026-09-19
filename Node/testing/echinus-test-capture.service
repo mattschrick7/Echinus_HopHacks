@@ -1,0 +1,14 @@
+[Unit]
+Description=Echinus boot-time test capture (blinks LED while recording)
+# No network dependency on purpose — this is meant to run standalone in the
+# field with no wifi available.
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=%REPO_DIR%
+ExecStart=%REPO_DIR%/Node/testing/blink_and_capture.sh
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+# Hub config. Copy to hub.toml on the Pi 4 and edit.
+
+[hub]
+# Shown in the dashboard so you can tell hubs apart if you run more than one.
+id = "hub-01"
+
+[server]
+# Where the Server is. ws:// on your LAN; wss:// if it's behind TLS.
+# Until you know the Server's IP, you can pass it at runtime instead:
+#   echinus-hub --server ws://192.168.1.50:8000/ws/hub
+url = "ws://192.168.1.50:8000/ws/hub"
+
+[lora]
+# Must match every node's [lora] settings exactly.
+serial_port   = "/dev/ttyS0"
+frequency_mhz = 915
+address       = 0
+power_dbm     = 22
+air_speed_bps = 2400

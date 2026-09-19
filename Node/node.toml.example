@@ -1,0 +1,36 @@
+# Per-node config. Copy to node.toml on the Pi and edit.
+#
+# Note what is NOT here: latitude, longitude, altitude, orientation. Those live
+# on the Server and are set by the operator in the dashboard. A node only needs
+# to know its own name and how to talk to the radio.
+
+[node]
+# Unique across the whole deployment, max 12 ASCII characters. The Server keys
+# everything — position, orientation, detections — on this string, so once a
+# node is deployed, don't change it.
+id = "node-01"
+
+[camera]
+width     = 640
+height    = 480
+fov_h_deg = 62.2   # horizontal field of view; 62.2 is the IMX219 at 640x480
+
+[detection]
+# Clutter suppression: down-weight pixels that change persistently (waving
+# branches, traffic) so transient targets stand out. See detector.py.
+suppress_clutter = true
+activity_alpha   = 0.02   # how fast the clutter map adapts (lower = slower)
+activity_ceiling = 0.35   # occupancy at which a pixel is fully suppressed
+
+# Uncomment to tune sensitivity:
+# alpha                = 0.05   # background adaptation rate
+# brightness_threshold = 30.0   # per-pixel change needed to count as motion
+# min_active_pixels    = 50     # smallest blob that counts as a detection
+
+[lora]
+# Must match the Hub's [lora] settings exactly.
+serial_port   = "/dev/ttyS0"
+frequency_mhz = 915
+address       = 0
+power_dbm     = 22
+air_speed_bps = 2400

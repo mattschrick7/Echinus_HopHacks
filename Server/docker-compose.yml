@@ -1,0 +1,30 @@
+# The whole ground station: one container, one volume.
+#
+#   docker compose up --build                       # the real thing
+#   docker compose --profile demo up --build        # plus fake nodes, no hardware
+#
+# Dashboard and hub websocket are both on port 8000.
+
+services:
+  server:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - echinus_data:/data
+    restart: unless-stopped
+
+  # Pretends to be a hub with a handful of nodes flying targets past them.
+  # Opt-in so it can never run by accident in a real deployment.
+  demo:
+    build: .
+    command: ["python", "simulator.py"]
+    environment:
+      - SERVER_URL=ws://server:8000/ws/hub
+    depends_on:
+      - server
+    profiles: ["demo"]
+    restart: unless-stopped
+
+volumes:
+  echinus_data:

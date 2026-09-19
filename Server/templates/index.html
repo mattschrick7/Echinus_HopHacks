@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Echinus</title>
+  <link rel="stylesheet" href="/static/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>Echinus</h1>
+  <span id="status">connecting…</span>
+  <span class="legend">
+    <span class="key"><i class="dot node"></i>node</span>
+    <span class="key"><i class="dot unconfigured"></i>needs position</span>
+    <span class="key"><i class="dot contact"></i>contact</span>
+  </span>
+</header>
+
+<main>
+  <div id="map"></div>
+
+  <aside>
+    <div class="panel-head">
+      <h2>Nodes</h2>
+      <button id="add-node" class="ghost">+ Add</button>
+    </div>
+    <div id="node-list"></div>
+
+    <!-- Editing a node. Everything here lives on the server, not on the node. -->
+    <form id="editor" hidden>
+      <h2 id="editor-title">Edit node</h2>
+
+      <label>Name <input name="name" type="text" placeholder="north ridge"></label>
+
+      <fieldset>
+        <legend>Position
+          <button type="button" id="pick" class="ghost small">pick on map</button>
+        </legend>
+        <div class="grid">
+          <label>Latitude <input name="lat" type="number" step="any" required></label>
+          <label>Longitude <input name="lon" type="number" step="any" required></label>
+          <label>Altitude (m) <input name="alt_m" type="number" step="any" value="0"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Orientation</legend>
+        <div class="grid">
+          <label>Yaw&nbsp;° <input name="yaw_deg" type="number" step="any" value="0">
+            <small>compass bearing of the lens (0 = N, 90 = E)</small></label>
+          <label>Pitch&nbsp;° <input name="pitch_deg" type="number" step="any" value="0">
+            <small>above the horizon (90 = straight up)</small></label>
+          <label>Roll&nbsp;° <input name="roll_deg" type="number" step="any" value="0">
+            <small>twist about the lens axis</small></label>
+        </div>
+      </fieldset>
+
+      <label class="check"><input name="enabled" type="checkbox" checked> Use this node for tracking</label>
+      <label>Notes <textarea name="notes" rows="2" placeholder="mounted on the shed roof"></textarea></label>
+
+      <div class="actions">
+        <button type="submit">Save</button>
+        <button type="button" id="cancel" class="ghost">Cancel</button>
+        <button type="button" id="delete" class="danger">Delete</button>
+      </div>
+    </form>
+
+    <div class="panel-head"><h2>Recent detections</h2></div>
+    <div id="feed"></div>
+  </aside>
+</main>
+
+<script src="/static/leaflet.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
