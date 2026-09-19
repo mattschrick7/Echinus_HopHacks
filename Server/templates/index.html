@@ -71,6 +71,8 @@
         <div class="grid">
           <label>Across&nbsp;° <input name="fov_h_deg" type="number" step="any" min="1" max="179" value="62.2"></label>
           <label>Up–down&nbsp;° <input name="fov_v_deg" type="number" step="any" min="1" max="179" value="48.8"></label>
+          <label>Range (m) <input name="range_m" type="number" step="any" min="1" value="1500">
+            <small>how far off it can pick out a drone — draws the cone, and the tracker ignores crossings beyond it</small></label>
         </div>
         <small class="hint">62.2 × 48.8 is the Pi camera at 640×480 — match the node's node.toml</small>
       </fieldset>

@@ -109,6 +109,7 @@ select {
 .node-top { display: flex; align-items: center; gap: 7px; }
 .node-sub { margin-top: 2px; padding-left: 16px; font-size: 0.78rem; color: var(--muted); }
 .node-sub em { color: var(--warn); font-style: normal; }
+.node-warn { margin-top: 3px; padding-left: 16px; font-size: 0.74rem; color: var(--warn); }
 
 .id {
   font-family: ui-monospace, monospace;

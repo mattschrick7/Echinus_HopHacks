@@ -16,12 +16,16 @@ def conn(tmp_path):
     connection.close()
 
 
-def place_node(conn, node_id, east, north):
-    """A node `east`/`north` metres from BASE, looking straight up."""
+def place_node(conn, node_id, east, north, range_m=5000.0):
+    """A node `east`/`north` metres from BASE, looking straight up.
+
+    Range defaults well past these tests' targets (2-2.5 km up), which are about
+    triangulation; the range rule has its own test.
+    """
     lat, lon, alt = enu_to_geodetic(np.array([east, north, 0.0]), *BASE)
     db.create_node(conn, node_id, {
         "lat": lat, "lon": lon, "alt_m": alt,
-        "yaw_deg": 0.0, "pitch_deg": 90.0, "roll_deg": 0.0,
+        "yaw_deg": 0.0, "pitch_deg": 90.0, "roll_deg": 0.0, "range_m": range_m,
     })
     return np.array([east, north, 0.0])
 
@@ -205,3 +209,18 @@ def test_a_ray_is_never_shared_between_contacts(conn):
 
     assert tracker.process(conn, db.detections_after(conn, 0)) == 2
     assert [c["node_count"] for c in db.list_contacts(conn)] == [3, 3]
+
+
+def test_crossings_beyond_detection_range_are_not_contacts(conn):
+    """A real node reports a distant plane like anything else. Where two such
+    bearings cross beyond either camera's range, there's no drone to find."""
+    target = np.array([0.0, 0.0, 2000.0])  # ~2 km from both nodes
+    a = place_node(conn, "node-a", -500.0, 0.0, range_m=1500.0)
+    b = place_node(conn, "node-b", 500.0, 0.0, range_m=1500.0)
+    see(conn, "node-a", a, target)
+    see(conn, "node-b", b, target)
+    assert tracker.process(conn, db.detections_after(conn, 0)) == 0
+
+    db.update_node(conn, "node-a", {"range_m": 2500.0})
+    db.update_node(conn, "node-b", {"range_m": 2500.0})
+    assert tracker.process(conn, db.detections_after(conn, 0)) == 1

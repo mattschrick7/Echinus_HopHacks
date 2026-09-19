@@ -12,6 +12,8 @@
 const POLL_MS = 2000;
 const OFFLINE_AFTER_MS = 5 * 60 * 1000; // no packet for 5 min = offline
 const MAX_SPREAD_KM = 50;               // further than this from every other node = probably a typo
+const CLOCK_WARN_MS = 1000;             // node clock this far from the hub's = detections won't pair
+const VIEW_WARN_MS = 10 * 60 * 1000;    // how long an out-of-view report stays flagged
 const CONTACT_LIMIT = 2000;             // most contacts drawn at once
 
 // One colour per node, in node-id order. Okabe–Ito, minus the yellow that
@@ -119,7 +121,7 @@ function drawNodes(nodes) {
         `<b>${node.name || node.node_id}</b><br>` +
         `${node.lat.toFixed(5)}, ${node.lon.toFixed(5)} · ${node.alt_m.toFixed(0)} m<br>` +
         `yaw ${node.yaw_deg}° · pitch ${node.pitch_deg}° · roll ${node.roll_deg}°<br>` +
-        `view ${node.fov_h_deg}° × ${node.fov_v_deg}°<br>` +
+        `view ${node.fov_h_deg}° × ${node.fov_v_deg}° · range ${node.range_m} m<br>` +
         `<small>click to edit · see the panel for last contact</small>`
       )
       .on("click", () => openEditor(node))
@@ -136,7 +138,7 @@ let previewSeq = 0;
 async function previewCone() {
   const cone = cones[editing];
   if (!cone) return; // unplaced node: nothing on the map yet
-  const names = ["lat", "lon", "yaw_deg", "pitch_deg", "roll_deg", "fov_h_deg", "fov_v_deg"];
+  const names = ["lat", "lon", "yaw_deg", "pitch_deg", "roll_deg", "fov_h_deg", "fov_v_deg", "range_m"];
   const values = Object.fromEntries(names.map((name) => [name, parseFloat(field(name).value)]));
   if (Object.values(values).some(Number.isNaN)) return;
 
@@ -249,10 +251,28 @@ function drawNodeList(nodes) {
            ? `${node.lat.toFixed(4)}, ${node.lon.toFixed(4)} · yaw ${node.yaw_deg}° pitch ${node.pitch_deg}°`
            : `<em>needs position &amp; orientation</em>`}
          · ${ago(node.last_seen)}${node.enabled ? "" : " · disabled"}
-       </div>`;
+       </div>
+       ${healthWarnings(node).map((w) => `<div class="node-warn">⚠ ${w}</div>`).join("")}`;
     card.onclick = () => openEditor(node);
     list.appendChild(card);
   }
+}
+
+// Problems only real hardware has: the simulator shares one clock and one
+// field of view with the Server, so it never trips these. See ingest.py.
+function healthWarnings(node) {
+  const warnings = [];
+  if (node.clock_offset_ms != null && Math.abs(node.clock_offset_ms) > CLOCK_WARN_MS) {
+    const seconds = (node.clock_offset_ms / 1000).toFixed(1);
+    warnings.push(`clock ${node.clock_offset_ms > 0 ? "+" : ""}${seconds}s off the hub's — ` +
+                  `its detections won't pair with other nodes. Check NTP on the node.`);
+  }
+  const outOfView = parseUtc(node.out_of_view_at);
+  if (outOfView && Date.now() - outOfView < VIEW_WARN_MS) {
+    warnings.push(`reported ${node.out_of_view_note}, outside the ${node.fov_h_deg}° × ${node.fov_v_deg}° ` +
+                  `set here — match Field of view to the node's node.toml.`);
+  }
+  return warnings;
 }
 
 function drawFeed(detections) {
@@ -276,7 +296,7 @@ function drawFeed(detections) {
 const field = (name) => editor.elements[name];
 
 const TEXT_FIELDS = ["name", "lat", "lon", "alt_m", "yaw_deg", "pitch_deg", "roll_deg",
-                     "fov_h_deg", "fov_v_deg", "notes"];
+                     "fov_h_deg", "fov_v_deg", "range_m", "notes"];
 
 function openEditor(node) {
   editing = node.node_id;
@@ -316,6 +336,7 @@ editor.onsubmit = async (event) => {
     roll_deg: number("roll_deg"),
     fov_h_deg: parseFloat(field("fov_h_deg").value) || 62.2,
     fov_v_deg: parseFloat(field("fov_v_deg").value) || 48.8,
+    range_m: parseFloat(field("range_m").value) || 1500,
     enabled: field("enabled").checked ? 1 : 0,
     notes: field("notes").value,
   };
@@ -412,7 +433,7 @@ async function poll() {
     // The cones only care about placement, so ignore last_seen ticking over.
     const placement = nodes.map((n) =>
       [n.node_id, n.name, n.lat, n.lon, n.alt_m, n.yaw_deg, n.pitch_deg, n.roll_deg,
-       n.fov_h_deg, n.fov_v_deg, n.configured, n.enabled].join());
+       n.fov_h_deg, n.fov_v_deg, n.range_m, n.configured, n.enabled].join());
 
     if (changed("nodes", placement)) drawNodes(nodes);
     drawContacts(contacts); // every poll: ages move on even when nothing new arrives

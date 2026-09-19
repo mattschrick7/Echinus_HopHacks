@@ -77,7 +77,7 @@ def build_nodes() -> list[dict]:
             "enu": offset,
             "lat": lat, "lon": lon, "alt_m": alt,
             "pitch_deg": PITCH_DEG, "roll_deg": 0.0,
-            "fov_h_deg": FOV_H_DEG, "fov_v_deg": FOV_V_DEG,
+            "fov_h_deg": FOV_H_DEG, "fov_v_deg": FOV_V_DEG, "range_m": DETECTION_RANGE_M,
         })
 
     for i, node in enumerate(nodes):
@@ -99,7 +99,7 @@ def configure_on_server(nodes: list[dict], attempts: int = 30) -> None:
 
     for node in nodes:
         body = {k: node[k] for k in ("node_id", "lat", "lon", "alt_m",
-                                   "yaw_deg", "pitch_deg", "roll_deg", "fov_h_deg", "fov_v_deg")}
+                                   "yaw_deg", "pitch_deg", "roll_deg", "fov_h_deg", "fov_v_deg", "range_m")}
         body["name"] = node["name"]
         request = urllib.request.Request(
             f"{API_URL}/api/nodes",
@@ -119,7 +119,7 @@ def observations(nodes: list[dict], elapsed: float) -> list[tuple[str, float, fl
         position = target["start"] + target["velocity"] * elapsed
         for node in nodes:
             direction = position - node["enu"]
-            if np.linalg.norm(direction) > DETECTION_RANGE_M:
+            if np.linalg.norm(direction) > node["range_m"]:
                 continue  # too far off to pick out, as the dashboard's cone shows
             angles = world_to_camera_azel(
                 direction / np.linalg.norm(direction),

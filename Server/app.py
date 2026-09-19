@@ -25,8 +25,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import db
+import ingest
 import tracker
-from geometry import DEFAULT_FOV_H_DEG, DEFAULT_FOV_V_DEG, camera_to_world_azel, view_footprint
+from geometry import DEFAULT_FOV_H_DEG, DEFAULT_FOV_V_DEG, DETECTION_RANGE_M, view_footprint
 
 HERE = Path(__file__).parent
 
@@ -58,37 +59,8 @@ def dashboard() -> str:
 # ── hub ingest ───────────────────────────────────────────────────────────────
 
 def record(message: dict) -> None:
-    """Store one message from a hub.
-
-    A detection's camera-relative angles are saved exactly as reported. If the
-    node has been positioned, the world bearing is computed and saved too —
-    that's the column the tracker reads. If it hasn't, the detection is still
-    kept: fill the node's position in later and new detections start counting.
-    """
-    node_id = message.get("node_id")
-    if not node_id:
-        return
-
-    node = db.ensure_node(conn, node_id)
-    if message["type"] != "detect":
-        return  # heartbeats just refresh last_seen, which ensure_node did
-
-    world = None
-    if node["configured"]:
-        world = camera_to_world_azel(
-            message["az_deg"], message["el_deg"],
-            node["yaw_deg"], node["pitch_deg"], node["roll_deg"],
-        )
-
-    db.insert_detection(
-        conn,
-        node_id=node_id,
-        hub_id=message.get("hub_id"),
-        node_time_ms=message.get("timestamp_ms", 0),
-        cam_az_deg=message["az_deg"],
-        cam_el_deg=message["el_deg"],
-        world=world,
-    )
+    """Store one message from a hub. The work is in ingest.py."""
+    ingest.record(conn, message)
 
 
 @app.websocket("/ws/hub")
@@ -120,7 +92,7 @@ def with_footprint(node: dict | None) -> dict | None:
     if node and node["configured"]:
         node["footprint"] = view_footprint(
             node["lat"], node["lon"], node["yaw_deg"], node["pitch_deg"], node["roll_deg"],
-            node["fov_h_deg"], node["fov_v_deg"],
+            node["fov_h_deg"], node["fov_v_deg"], node["range_m"],
         )
     return node
 
@@ -134,9 +106,10 @@ def api_nodes() -> list[dict]:
 def api_footprint(
     lat: float, lon: float, yaw_deg: float, pitch_deg: float, roll_deg: float = 0.0,
     fov_h_deg: float = DEFAULT_FOV_H_DEG, fov_v_deg: float = DEFAULT_FOV_V_DEG,
+    range_m: float = DETECTION_RANGE_M,
 ) -> list[tuple[float, float]]:
     """The same outline for values not saved yet: the editor's live preview."""
-    return view_footprint(lat, lon, yaw_deg, pitch_deg, roll_deg, fov_h_deg, fov_v_deg)
+    return view_footprint(lat, lon, yaw_deg, pitch_deg, roll_deg, fov_h_deg, fov_v_deg, range_m)
 
 
 @app.post("/api/nodes")

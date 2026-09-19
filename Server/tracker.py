@@ -11,7 +11,10 @@ Per cycle:
   2. Bucket them by time, so we only compare things seen at the same moment.
   3. In each bucket, try every pair of rays from *different* nodes and keep the
      pairs that genuinely meet — within a small angle of each other, in front
-     of both cameras, at a believable height. A lone node seeing something is
+     of both cameras, within both nodes' detection range, at a believable
+     height. The range matters with real nodes: a node that picks up a distant
+     plane sends a bearing like any other, and two such bearings can cross far
+     beyond where either camera could really make out a drone. A lone node seeing something is
      not evidence of an object's position.
   4. Hand the rays out to objects, closest-meeting pairs first, and never give
      one ray to two objects. A ray is one node seeing one thing; when two
@@ -65,22 +68,26 @@ def _tolerance(range_m: float) -> float:
     return max(MIN_GAP_M, range_m * np.tan(np.radians(MEETING_ANGLE_DEG)))
 
 
-def crossings(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[float, int, int, np.ndarray]]:
+# A ray: (node id, origin in ENU, unit direction, the node's detection range).
+Ray = tuple[str, np.ndarray, np.ndarray, float]
+
+
+def crossings(rays: list[Ray]) -> list[tuple[float, int, int, np.ndarray]]:
     """Every cross-node ray pair that genuinely meets somewhere plausible.
 
     Returns (gap, ray index, ray index, meeting point), best meetings first.
     """
     found = []
-    for i, (node_a, origin_a, direction_a) in enumerate(rays):
+    for i, (node_a, origin_a, direction_a, range_a) in enumerate(rays):
         for j in range(i + 1, len(rays)):
-            node_b, origin_b, direction_b = rays[j]
+            node_b, origin_b, direction_b, range_b = rays[j]
             if node_a == node_b:
                 continue  # a node can't triangulate against itself
             result = closest_approach(origin_a, direction_a, origin_b, direction_b)
             if result is None:
                 continue
             midpoint, gap, t_a, t_b = result
-            if t_a <= 0 or t_b <= 0 or not _believable(midpoint):
+            if not (0 < t_a <= range_a and 0 < t_b <= range_b) or not _believable(midpoint):
                 continue
             if gap > _tolerance(min(t_a, t_b)):
                 continue
@@ -88,7 +95,7 @@ def crossings(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[floa
     return sorted(found, key=lambda f: f[0])
 
 
-def associate(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[np.ndarray, set]]:
+def associate(rays: list[Ray]) -> list[tuple[np.ndarray, set]]:
     """Group rays into objects, each ray used at most once.
 
     Seed an object from the best unclaimed pair, then let every other node
@@ -105,11 +112,11 @@ def associate(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[np.n
 
         # Other nodes' rays that also pass through this object, nearest first.
         candidates = []
-        for k, (node_k, origin_k, direction_k) in enumerate(rays):
+        for k, (node_k, origin_k, direction_k, range_k) in enumerate(rays):
             if k in used or k in members:
                 continue
             miss, along = distance_to_ray(point, origin_k, direction_k)
-            if along > 0 and miss <= _tolerance(along):
+            if 0 < along <= range_k and miss <= _tolerance(along):
                 candidates.append((miss, k))
         for _miss, k in sorted(candidates):
             if rays[k][0] in {rays[m][0] for m in members}:
@@ -122,14 +129,15 @@ def associate(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[np.n
     return objects
 
 
-def _node_positions(conn) -> tuple[dict[str, np.ndarray], tuple[float, float, float]] | None:
-    """Configured, enabled nodes as ENU positions around their shared centre."""
+def _node_positions(conn) -> tuple[dict[str, tuple[np.ndarray, float]], tuple[float, float, float]] | None:
+    """Configured, enabled nodes as (ENU position, detection range) around
+    their shared centre."""
     nodes = [n for n in db.list_nodes(conn) if n["configured"] and n["enabled"]]
     if len(nodes) < MIN_NODES:
         return None
     origin = mean_position((n["lat"], n["lon"], n["alt_m"]) for n in nodes)
     return {
-        n["node_id"]: geodetic_to_enu(n["lat"], n["lon"], n["alt_m"], *origin)
+        n["node_id"]: (geodetic_to_enu(n["lat"], n["lon"], n["alt_m"], *origin), n["range_m"])
         for n in nodes
     }, origin
 
@@ -147,11 +155,12 @@ def process(conn, detections: list[dict]) -> int:
 
     written = 0
     for group in buckets.values():
-        rays = [
-            (d["node_id"], node_enu[d["node_id"]], azel_to_unit(d["world_az_deg"], d["world_el_deg"]))
-            for d in group
-            if d["node_id"] in node_enu
-        ]
+        rays = []
+        for d in group:
+            if d["node_id"] not in node_enu:
+                continue
+            position, range_m = node_enu[d["node_id"]]
+            rays.append((d["node_id"], position, azel_to_unit(d["world_az_deg"], d["world_el_deg"]), range_m))
         for centre, nodes in associate(rays):
             if len(nodes) < MIN_NODES:
                 continue

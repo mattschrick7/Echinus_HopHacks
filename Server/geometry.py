@@ -154,10 +154,11 @@ def world_to_camera_azel(
 DEFAULT_FOV_H_DEG = 62.2
 DEFAULT_FOV_V_DEG = 48.8
 
-# How far away a node can pick out a drone. A lens alone would see forever;
-# what runs out is pixels on the target. This is the one number that sets both
-# how far the dashboard draws each view cone and how far the simulator's
-# cameras detect — keep them the same, or contacts land outside the cones.
+# How far away a node can pick out a drone, for a node nobody has set one on.
+# A lens alone would see forever; what runs out is pixels on the target. Each
+# node carries its own range_m (editable in the dashboard), and that one value
+# sets how far its cone is drawn, how far the tracker will trust its bearings,
+# and how far the simulator's camera detects.
 DETECTION_RANGE_M = 1500.0
 
 

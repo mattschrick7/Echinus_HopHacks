@@ -39,11 +39,16 @@ CREATE TABLE IF NOT EXISTS nodes (
     roll_deg    REAL NOT NULL DEFAULT 0,    -- rotation about the lens axis
     fov_h_deg   REAL NOT NULL DEFAULT 62.2, -- camera field of view, across
     fov_v_deg   REAL NOT NULL DEFAULT 48.8, -- and up-down
+    range_m     REAL NOT NULL DEFAULT 1500, -- how far off it can pick out a drone
     configured  INTEGER NOT NULL DEFAULT 0, -- operator has set position + orientation
     enabled     INTEGER NOT NULL DEFAULT 1, -- include this node in tracking
     notes       TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    last_seen   TEXT
+    last_seen   TEXT,
+    -- Health, measured from real traffic; never typed in.
+    clock_offset_ms  REAL,  -- node clock minus hub clock, smoothed; NULL = unknown
+    out_of_view_at   TEXT,  -- last time it reported an angle outside its set view
+    out_of_view_note TEXT   -- and what that angle was
 );
 
 CREATE TABLE IF NOT EXISTS detections (
@@ -74,7 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_contacts_observed_at ON contacts (observed_at);
 # Fields the operator may edit from the dashboard. Everything else about a node
 # is either its identity or is derived from traffic.
 EDITABLE = ("name", "lat", "lon", "alt_m", "yaw_deg", "pitch_deg", "roll_deg",
-            "fov_h_deg", "fov_v_deg", "enabled", "notes")
+            "fov_h_deg", "fov_v_deg", "range_m", "enabled", "notes")
 
 
 def connect(path: str | None = None) -> sqlite3.Connection:
@@ -95,6 +100,10 @@ LATER_COLUMNS = {
     "nodes": {
         "fov_h_deg": "REAL NOT NULL DEFAULT 62.2",
         "fov_v_deg": "REAL NOT NULL DEFAULT 48.8",
+        "range_m": "REAL NOT NULL DEFAULT 1500",
+        "clock_offset_ms": "REAL",
+        "out_of_view_at": "TEXT",
+        "out_of_view_note": "TEXT",
     },
     "contacts": {
         "node_ids": "TEXT NOT NULL DEFAULT ''",
@@ -150,6 +159,9 @@ def update_node(conn, node_id: str, changes: dict[str, Any]) -> dict | None:
 
     assignments = ", ".join(f"{k} = ?" for k in fields)
     conn.execute(f"UPDATE nodes SET {assignments} WHERE node_id = ?", (*fields.values(), node_id))
+    if {"fov_h_deg", "fov_v_deg"} & fields.keys():
+        # The operator has changed the view; judge the next detections afresh.
+        conn.execute("UPDATE nodes SET out_of_view_at = NULL, out_of_view_note = NULL WHERE node_id = ?", (node_id,))
 
     # A node counts as configured once it has a real position. Latitude and
     # longitude both exactly zero is the default the row starts life with, and
@@ -162,6 +174,19 @@ def update_node(conn, node_id: str, changes: dict[str, Any]) -> dict | None:
     )
     conn.commit()
     return get_node(conn, node_id)
+
+
+def set_clock_offset(conn, node_id: str, offset_ms: float) -> None:
+    conn.execute("UPDATE nodes SET clock_offset_ms = ? WHERE node_id = ?", (offset_ms, node_id))
+    conn.commit()
+
+
+def flag_out_of_view(conn, node_id: str, note: str) -> None:
+    conn.execute(
+        "UPDATE nodes SET out_of_view_at = datetime('now'), out_of_view_note = ? WHERE node_id = ?",
+        (note, node_id),
+    )
+    conn.commit()
 
 
 def create_node(conn, node_id: str, changes: dict[str, Any]) -> dict:
