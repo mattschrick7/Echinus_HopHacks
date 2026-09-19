@@ -1,5 +1,5 @@
 """
-The Server's database — SQLite, one file, three tables.
+The Server's database — SQLite, one file, four tables.
 
 This file is the source of truth for the whole system. Nodes and hubs hold no
 persistent state; everything that matters is here.
@@ -15,6 +15,9 @@ persistent state; everything that matters is here.
                  once the node has a position and orientation.
     contacts     positions worked out by crossing detections from two or more
                  nodes. Written by the tracker.
+    tracks       contacts chained over time into one object each — a target.
+                 This table is the association state (targets.py), so a
+                 restarted Server carries on the same targets.
 
 SQLite because this is one always-on box with one writer. WAL mode lets the
 dashboard read while detections stream in.
@@ -74,6 +77,29 @@ CREATE TABLE IF NOT EXISTS contacts (
     node_ids     TEXT NOT NULL DEFAULT ''  -- comma-separated: who saw it
 );
 CREATE INDEX IF NOT EXISTS idx_contacts_observed_at ON contacts (observed_at);
+
+CREATE TABLE IF NOT EXISTS tracks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    number        INTEGER,                 -- display id T-n; NULL until confirmed
+    status        TEXT NOT NULL,           -- tentative | active | lost | dropped
+    first_ms      INTEGER NOT NULL,        -- node time of the first contact
+    last_ms       INTEGER NOT NULL,        -- and of the latest
+    lat           REAL NOT NULL,           -- smoothed position
+    lon           REAL NOT NULL,
+    alt_m         REAL,
+    vel_e         REAL,                    -- smoothed velocity, m/s; NULL until
+    vel_n         REAL,                    -- the second contact
+    vel_u         REAL,
+    contact_count INTEGER NOT NULL DEFAULT 0,
+    node_ids      TEXT NOT NULL DEFAULT '', -- every node that has seen it
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks (status);
+"""
+
+# Indexes on columns added by LATER_COLUMNS, created once those columns exist.
+LATER_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_contacts_track ON contacts (track_id);
 """
 
 # Fields the operator may edit from the dashboard. Everything else about a node
@@ -107,6 +133,8 @@ LATER_COLUMNS = {
     },
     "contacts": {
         "node_ids": "TEXT NOT NULL DEFAULT ''",
+        "track_id": "INTEGER",       # the target this contact belongs to
+        "node_time_ms": "INTEGER",   # node clock of the bucket it came from
     },
 }
 
@@ -117,6 +145,7 @@ def _add_missing_columns(conn) -> None:
         for name, definition in columns.items():
             if name not in present:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    conn.executescript(LATER_INDEXES)
     conn.commit()
 
 
@@ -245,13 +274,23 @@ def latest_detection_id(conn) -> int:
 
 # ── contacts ─────────────────────────────────────────────────────────────────
 
-def insert_contact(conn, lat: float, lon: float, alt_m: float | None, node_ids) -> None:
+def insert_contact(
+    conn,
+    lat: float,
+    lon: float,
+    alt_m: float | None,
+    node_ids,
+    track_id: int | None = None,
+    node_time_ms: int | None = None,
+) -> int:
     node_ids = sorted(node_ids)
-    conn.execute(
-        "INSERT INTO contacts (lat, lon, alt_m, node_count, node_ids) VALUES (?, ?, ?, ?, ?)",
-        (lat, lon, alt_m, len(node_ids), ",".join(node_ids)),
+    cur = conn.execute(
+        "INSERT INTO contacts (lat, lon, alt_m, node_count, node_ids, track_id, node_time_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (lat, lon, alt_m, len(node_ids), ",".join(node_ids), track_id, node_time_ms),
     )
     conn.commit()
+    return cur.lastrowid
 
 
 def list_contacts(conn, limit: int = 200, max_age_s: float | None = None) -> list[dict]:
@@ -267,4 +306,98 @@ def list_contacts(conn, limit: int = 200, max_age_s: float | None = None) -> lis
     )
     for row in rows:
         row["node_ids"] = [n for n in row["node_ids"].split(",") if n]
+    return rows
+
+
+def track_contacts(conn, track_id: int) -> list[dict]:
+    """One target's whole flight path, oldest first."""
+    rows = _rows(
+        conn,
+        "SELECT *, (julianday('now') - julianday(observed_at)) * 86400.0 AS age_s "
+        "FROM contacts WHERE track_id = ? ORDER BY COALESCE(node_time_ms, 0), id",
+        (track_id,),
+    )
+    for row in rows:
+        row["node_ids"] = [n for n in row["node_ids"].split(",") if n]
+    return rows
+
+
+# ── tracks ───────────────────────────────────────────────────────────────────
+
+def _track(row: dict) -> dict:
+    row["node_ids"] = [n for n in row["node_ids"].split(",") if n]
+    return row
+
+
+def get_track(conn, track_id: int) -> dict | None:
+    rows = _rows(conn, "SELECT * FROM tracks WHERE id = ?", (track_id,))
+    return _track(rows[0]) if rows else None
+
+
+def open_tracks(conn) -> list[dict]:
+    """Tracks still able to take contacts: tentative and active."""
+    return [_track(r) for r in _rows(
+        conn, "SELECT * FROM tracks WHERE status IN ('tentative', 'active') ORDER BY id")]
+
+
+def insert_track(conn, t_ms: int, lat: float, lon: float, alt_m: float | None, node_ids) -> int:
+    cur = conn.execute(
+        "INSERT INTO tracks (status, first_ms, last_ms, lat, lon, alt_m, contact_count, node_ids) "
+        "VALUES ('tentative', ?, ?, ?, ?, ?, 1, ?)",
+        (t_ms, t_ms, lat, lon, alt_m, ",".join(sorted(node_ids))),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+TRACK_FIELDS = ("number", "status", "last_ms", "lat", "lon", "alt_m",
+                "vel_e", "vel_n", "vel_u", "contact_count", "node_ids")
+
+
+def update_track(conn, track_id: int, changes: dict[str, Any]) -> None:
+    fields = {k: v for k, v in changes.items() if k in TRACK_FIELDS}
+    if "node_ids" in fields and not isinstance(fields["node_ids"], str):
+        fields["node_ids"] = ",".join(sorted(fields["node_ids"]))
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(
+        f"UPDATE tracks SET {assignments}, updated_at = datetime('now') WHERE id = ?",
+        (*fields.values(), track_id),
+    )
+    conn.commit()
+
+
+def close_tracks(conn, older_than_ms: int) -> None:
+    """Tracks with no contact since `older_than_ms` are over: numbered ones are
+    lost, unconfirmed ones dropped. updated_at is left alone, so a lost target
+    ages from its last contact."""
+    conn.execute(
+        "UPDATE tracks SET status = CASE WHEN number IS NULL THEN 'dropped' ELSE 'lost' END "
+        "WHERE status IN ('tentative', 'active') AND last_ms < ?",
+        (older_than_ms,),
+    )
+    conn.commit()
+
+
+def next_target_number(conn) -> int:
+    row = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM tracks").fetchone()
+    return row["n"]
+
+
+def list_targets(conn, max_age_s: float | None = None) -> list[dict]:
+    """Confirmed tracks — the ones worth showing as targets. Targets are
+    permanent: lost ones stay listed, with their whole path, unless the caller
+    passes `max_age_s` to leave out lost ones older than that. Ones still being
+    tracked come first, then the rest newest first."""
+    rows = _rows(
+        conn,
+        "SELECT *, (julianday('now') - julianday(updated_at)) * 86400.0 AS age_s "
+        "FROM tracks WHERE number IS NOT NULL AND status != 'dropped' "
+        "AND (status = 'active' OR ? IS NULL OR updated_at >= datetime('now', ?)) "
+        "ORDER BY status = 'active' DESC, number DESC",
+        (max_age_s, f"-{max_age_s or 0} seconds"),
+    )
+    for row in rows:
+        _track(row)
+        v = [row["vel_e"], row["vel_n"], row["vel_u"]]
+        row["speed_mps"] = None if None in v else sum(x * x for x in v) ** 0.5
     return rows

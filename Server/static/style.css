@@ -8,6 +8,7 @@
   --accent: #4ea1ff;
   --warn: #d99a4e;
   --bad: #ff5c5c;
+  --target: #ff2d78;  /* a selected target's flight path; unlike any node colour */
 }
 
 * { box-sizing: border-box; }
@@ -176,6 +177,33 @@ button.ghost:hover { color: var(--text); border-color: var(--muted); }
 button.ghost.active { border-color: var(--accent); color: var(--accent); }
 button.small { padding: 2px 8px; font-size: 0.7rem; }
 button.danger { margin-left: auto; background: none; border-color: var(--bad); color: var(--bad); }
+
+/* ── target list ──────────────────────────────────────────────────────────── */
+
+#targets > .target {
+  padding: 8px 16px;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+#targets > .target:hover { background: #20242b; }
+#targets > .target.selected { border-left-color: var(--target); background: #20242b; }
+#targets > .target.lost:not(.selected) { opacity: 0.6; }
+
+.target-top { display: flex; align-items: center; gap: 7px; }
+.target-top b { font-family: ui-monospace, monospace; }
+.target-top .dots { margin-left: auto; display: flex; gap: 3px; }
+
+.pill {
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 0.7rem;
+  border: 1px solid currentColor;
+}
+.pill.active { color: #7fbf7f; }
+.pill.lost   { color: var(--muted); }
+
+.dot.target { background: var(--target); border: 2px solid #fff; }
+.marker.path-point { background: var(--target); border: 1px solid #fff; }
 
 /* ── detection feed ───────────────────────────────────────────────────────── */
 

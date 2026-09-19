@@ -54,9 +54,17 @@ FOV_H_DEG, FOV_V_DEG = DEFAULT_FOV_H_DEG, DEFAULT_FOV_V_DEG
 # Drones, in metres around the ring's centre: starting point and velocity. A
 # few hundred metres up at ~30 m/s, crossing the ring in a LOOP_S loop.
 TARGETS = [
-    {"start": np.array([-1500.0, 100.0, 200.0]), "velocity": np.array([30.0, 0.0, 0.0])},
-    {"start": np.array([150.0, -1500.0, 300.0]), "velocity": np.array([-3.0, 28.0, -1.0])},
+    {"id": "alpha", "start": np.array([-1500.0, 100.0, 200.0]), "velocity": np.array([30.0, 0.0, 0.0])},
+    {"id": "bravo", "start": np.array([150.0, -1500.0, 300.0]), "velocity": np.array([-3.0, 28.0, -1.0])},
 ]
+# Target ids are ground truth for the tests only (tests/test_targets.py). They
+# are never sent: a real node can't know which drone it's looking at, so the
+# Server has to work that out the same way for simulated ones.
+
+
+def target_positions(elapsed: float) -> dict[str, np.ndarray]:
+    """Where each target really is, in metres around the ring's centre."""
+    return {t["id"]: t["start"] + t["velocity"] * elapsed for t in TARGETS}
 
 
 def build_nodes() -> list[dict]:
@@ -115,8 +123,7 @@ def configure_on_server(nodes: list[dict], attempts: int = 30) -> None:
 def observations(nodes: list[dict], elapsed: float) -> list[tuple[str, float, float]]:
     """What every node sees right now, as (node_id, cam_az, cam_el)."""
     seen = []
-    for target in TARGETS:
-        position = target["start"] + target["velocity"] * elapsed
+    for position in target_positions(elapsed).values():
         for node in nodes:
             direction = position - node["enu"]
             if np.linalg.norm(direction) > node["range_m"]:

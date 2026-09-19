@@ -16,6 +16,7 @@
     <span class="key"><i class="dot node"></i>node &amp; what it sees</span>
     <span class="key"><i class="dot unconfigured"></i>needs position</span>
     <span class="key"><i class="dot contact"></i>contact, in the colours of the nodes that saw it</span>
+    <span class="key"><i class="dot target"></i>selected target's path</span>
     <label class="key">trail
       <select id="trail">
         <option value="5">5 s</option>
@@ -86,6 +87,10 @@
         <button type="button" id="delete" class="danger">Delete</button>
       </div>
     </form>
+
+    <!-- Contacts the Server has chained into one drone each (targets.py). -->
+    <div class="panel-head"><h2>Targets</h2></div>
+    <div id="targets"></div>
 
     <div class="panel-head"><h2>Recent detections</h2></div>
     <div id="feed"></div>

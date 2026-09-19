@@ -24,17 +24,22 @@ Per cycle:
      ray also passes through the object joins it, so three nodes seeing one
      thing make one contact with node_count = 3.
 
+Each contact is then handed to targets.py, which chains contacts over time
+into targets (T-1, T-2, …) and stamps the contact with its track id.
+
 The newest bucket is held back one cycle so a straggling detection has a chance
 to join it before the bucket is closed.
 """
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 
 import numpy as np
 
 import db
+import targets
 from geometry import (
     azel_to_unit,
     closest_approach,
@@ -154,18 +159,24 @@ def process(conn, detections: list[dict]) -> int:
         buckets[d["node_time_ms"] // BUCKET_MS].append(d)
 
     written = 0
-    for group in buckets.values():
+    for key in sorted(buckets):  # oldest first: tracks must see time move forwards
+        group = buckets[key]
         rays = []
         for d in group:
             if d["node_id"] not in node_enu:
                 continue
             position, range_m = node_enu[d["node_id"]]
             rays.append((d["node_id"], position, azel_to_unit(d["world_az_deg"], d["world_el_deg"]), range_m))
-        for centre, nodes in associate(rays):
-            if len(nodes) < MIN_NODES:
-                continue
+        fixes = [(centre, nodes) for centre, nodes in associate(rays) if len(nodes) >= MIN_NODES]
+        if not fixes:
+            continue
+        # The bucket's moment on the nodes' clock, which is what target
+        # velocities are measured against (observed_at is only write time).
+        t_ms = round(sum(d["node_time_ms"] for d in group) / len(group))
+        track_ids = targets.assign(conn, fixes, t_ms, origin)
+        for (centre, nodes), track_id in zip(fixes, track_ids):
             lat, lon, alt = enu_to_geodetic(centre, *origin)
-            db.insert_contact(conn, lat, lon, alt, nodes)
+            db.insert_contact(conn, lat, lon, alt, nodes, track_id=track_id, node_time_ms=t_ms)
             written += 1
     return written
 
@@ -178,6 +189,9 @@ async def run(conn) -> None:
 
     while True:
         await asyncio.sleep(POLL_S)
+        # A drone that leaves every camera's view sends nothing at all, so
+        # close tracks on the wall clock too, not only when detections arrive.
+        targets.expire(conn, int(time.time() * 1000))
 
         new = db.detections_after(conn, watermark)
         if new:

@@ -147,6 +147,21 @@ def api_contacts(limit: int = 200, max_age_s: float | None = None) -> list[dict]
     return db.list_contacts(conn, limit, max_age_s)
 
 
+@app.get("/api/targets")
+def api_targets(max_age_s: float | None = None) -> list[dict]:
+    """Contacts chained into drones (targets.py). Every target ever confirmed,
+    lost ones included; pass max_age_s to leave out lost ones older than that."""
+    return db.list_targets(conn, max_age_s)
+
+
+@app.get("/api/targets/{track_id}/contacts")
+def api_target_contacts(track_id: int) -> list[dict]:
+    """Every contact that makes up one target: its flight path, oldest first."""
+    if db.get_track(conn, track_id) is None:
+        raise HTTPException(404, f"no target {track_id}")
+    return db.track_contacts(conn, track_id)
+
+
 @app.get("/api/status")
 def api_status() -> dict:
     return {

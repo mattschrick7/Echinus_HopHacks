@@ -29,6 +29,7 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 
 const nodeLayer = L.layerGroup().addTo(map);
 const contactLayer = L.layerGroup().addTo(map);
+const pathLayer = L.layerGroup().addTo(map); // the selected target's flight path
 
 const el = (id) => document.getElementById(id);
 const editor = el("editor");
@@ -38,6 +39,8 @@ let latestNodes = [];    // the last node list from the server
 let picking = false;     // "pick on map" mode
 let fitted = false;      // only auto-zoom to the data once
 let nodeColour = {};     // node_id -> colour, rebuilt from every poll
+let selectedTarget = null; // track id whose flight path is drawn, or null
+let targetNumber = {};   // track id -> its T-n number, for contact popups
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -168,7 +171,8 @@ function contactPopup(contact) {
   const names = contact.node_ids.length
     ? contact.node_ids.map((id) => `<i class="dot" style="background:${colourFor(id)}"></i> ${id}`).join("<br>")
     : `${contact.node_count} nodes`;
-  return `<b>contact #${contact.id}</b><br>` +
+  const number = targetNumber[contact.track_id];
+  return `<b>contact #${contact.id}</b>` + (number ? ` · <b>T-${number}</b>` : "") + `<br>` +
     `${contact.lat.toFixed(5)}, ${contact.lon.toFixed(5)}` +
     (contact.alt_m != null ? ` · ${contact.alt_m.toFixed(0)} m` : "") +
     `<br>${names}<br><small>${contact.observed_at} UTC</small>`;
@@ -188,10 +192,12 @@ function drawContacts(contacts) {
       if (m) m.remove();
       m = marker([contact.lat, contact.lon], "contact", 12, style)
         .bindPopup(contactPopup(contact))
+        .on("click", () => { if (targetNumber[contact.track_id]) selectTarget(contact.track_id); })
         .addTo(contactLayer);
       m.ringStyle = style;
       contactMarkers.set(contact.id, m);
     }
+    m.setPopupContent(contactPopup(contact)); // a target number can arrive after the contact
     m.setOpacity(Math.max(0, 1 - contact.age_s / trail));
     m.setZIndexOffset(-Math.round(contact.age_s)); // newest on top
   }
@@ -211,7 +217,10 @@ function fitOnce(nodes, contacts) {
 }
 
 map.on("click", (event) => {
-  if (!picking) return;
+  if (!picking) {
+    if (selectedTarget !== null) selectTarget(null); // click the background to deselect
+    return;
+  }
   editor.elements.lat.value = event.latlng.lat.toFixed(6);
   editor.elements.lon.value = event.latlng.lng.toFixed(6);
   setPicking(false);
@@ -287,6 +296,76 @@ function drawFeed(detections) {
           : `→ ${d.world_az_deg.toFixed(0)}° / ${d.world_el_deg.toFixed(0)}°`}</span></div>`
     )
     .join("") || `<p class="empty">Nothing detected yet.</p>`;
+}
+
+// ── targets ──────────────────────────────────────────────────────────────────
+
+// A target is contacts the Server has chained into one drone (targets.py).
+// Numbers are handed out automatically once a track has proved itself. Targets
+// are permanent: a lost one stays listed and its whole path can still be drawn.
+
+function drawTargetList(targets) {
+  const list = el("targets");
+  if (!targets.length) {
+    list.innerHTML = `<p class="empty">No targets. A drone appears here once two or more
+      nodes have tracked it for a moment.</p>`;
+    return;
+  }
+  list.innerHTML = "";
+  for (const t of targets) {
+    const card = document.createElement("div");
+    card.className = `target ${t.status}` + (t.id === selectedTarget ? " selected" : "");
+    const facts = [
+      `${t.contact_count} contacts`,
+      t.speed_mps != null ? `${t.speed_mps.toFixed(0)} m/s` : null,
+      t.alt_m != null ? `${t.alt_m.toFixed(0)} m up` : null,
+      `last seen ${ago(t.updated_at)}`,
+    ].filter(Boolean);
+    card.innerHTML =
+      `<div class="target-top">
+         <b>T-${t.number}</b>
+         <span class="pill ${t.status}">${t.status === "active" ? "tracking" : "lost"}</span>
+         <span class="dots">${t.node_ids.map((id) =>
+           `<i class="dot" title="${id}" style="background:${colourFor(id)}"></i>`).join("")}</span>
+       </div>
+       <div class="node-sub">${facts.join(" · ")}</div>`;
+    card.onclick = () => selectTarget(t.id === selectedTarget ? null : t.id);
+    list.appendChild(card);
+  }
+}
+
+let pathFitted = false; // zoom to a target's path once, when it's first selected
+let pathSeq = 0;
+
+function selectTarget(trackId) {
+  selectedTarget = trackId;
+  pathFitted = false;
+  pathLayer.clearLayers();
+  delete lastDrawn.targets; // redraw the list so the highlight moves
+  delete lastDrawn.path;
+  poll();
+}
+
+// The whole flight path: every contact the target is made of, joined in time
+// order. Re-fetched each poll while the target is live, so it grows as it flies.
+async function drawPath(target) {
+  if (!target) return;
+  const seq = ++pathSeq;
+  const contacts = await api(`/api/targets/${target.id}/contacts`);
+  if (seq !== pathSeq || selectedTarget !== target.id) return;
+  if (!changed("path", [target.id, contacts.length])) return;
+
+  pathLayer.clearLayers();
+  const points = contacts.map((c) => [c.lat, c.lon]);
+  L.polyline(points, { color: getComputedStyle(document.documentElement).getPropertyValue("--target"),
+                       weight: 3, opacity: 0.9, interactive: false }).addTo(pathLayer);
+  for (const c of contacts) {
+    marker([c.lat, c.lon], "path-point", 7).bindPopup(contactPopup(c)).addTo(pathLayer);
+  }
+  if (!pathFitted && points.length) {
+    map.fitBounds(L.latLngBounds(points).pad(0.3), { maxZoom: 16 });
+    pathFitted = true;
+  }
 }
 
 // ── editor ───────────────────────────────────────────────────────────────────
@@ -421,12 +500,14 @@ function changed(key, value) {
 
 async function poll() {
   try {
-    const [status, nodes, contacts, detections] = await Promise.all([
+    const [status, nodes, contacts, detections, targets] = await Promise.all([
       api("/api/status"),
       api("/api/nodes"),
       api(`/api/contacts?limit=${CONTACT_LIMIT}&max_age_s=${trailSeconds()}`),
       api("/api/detections?limit=25"),
+      api("/api/targets"), // every target ever, lost ones too: the trail doesn't apply
     ]);
+    targetNumber = Object.fromEntries(targets.map((t) => [t.id, t.number]));
     latestNodes = nodes;
     assignColours(nodes);
 
@@ -441,8 +522,19 @@ async function poll() {
     if (changed("list", [nodes, editing])) drawNodeList(nodes);
     if (changed("feed", detections)) drawFeed(detections);
 
+    if (changed("targets", [targets.map((t) => [t.id, t.status, t.contact_count, t.node_ids,
+                                                 Math.round(t.age_s)]), selectedTarget])) {
+      drawTargetList(targets);
+    }
+    if (selectedTarget !== null) {
+      const target = targets.find((t) => t.id === selectedTarget) || { id: selectedTarget };
+      await drawPath(target);
+    }
+
     const hubs = status.hubs.length ? status.hubs.join(", ") : "no hub connected";
-    el("status").textContent = `${hubs} · ${nodes.length} node(s) · ${contacts.length} contact(s)`;
+    const tracking = targets.filter((t) => t.status === "active").length;
+    el("status").textContent =
+      `${hubs} · ${nodes.length} node(s) · ${contacts.length} contact(s) · ${tracking} target(s)`;
     el("status").classList.toggle("bad", status.hubs.length === 0);
   } catch {
     el("status").textContent = "cannot reach the server";
