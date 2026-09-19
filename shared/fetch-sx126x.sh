@@ -26,9 +26,19 @@ fi
 SITE_PACKAGES="$("$PYTHON" -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")"
 TARGET="$SITE_PACKAGES/sx126x.py"
 
-if [ -f "$TARGET" ]; then
+# Only skip the download for a driver that actually works. Older curl versions
+# leave a zero-byte file behind when -f trips on an HTTP error, so "the file is
+# there" is not the same as "the driver is installed" — and the version of this
+# script that fetched from a dead URL could have left one.
+# Compile rather than import: importing pulls in RPi.GPIO and pyserial, so a
+# missing apt package would condemn a perfectly good driver file.
+if [ -s "$TARGET" ] && "$PYTHON" -m py_compile "$TARGET" 2>/dev/null; then
     echo "sx126x driver already at $TARGET"
     exit 0
+fi
+if [ -f "$TARGET" ]; then
+    echo "replacing unusable $TARGET"
+    rm -f "$TARGET"
 fi
 
 echo "fetching Waveshare sx126x driver..."
