@@ -24,6 +24,24 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
+# Nothing can detect a duplicate id — the Server just merges two nodes' bearings
+# under one name — so print it and let the operator catch it.
+NODE_ID="$(sed -n 's/^[[:space:]]*id[[:space:]]*=[[:space:]]*"\([^"]*\)".*//p' "$CONFIG" | head -1)"
+echo "node id: ${NODE_ID:-UNSET}"
+
+# ── architecture ─────────────────────────────────────────────────────────────
+# numpy and scipy publish aarch64 wheels but nothing for 32-bit ARM, so on
+# 32-bit Pi OS uv falls back to building scipy from source — which a 512MB
+# Zero 2W will not survive. Catch it here rather than an hour into a build.
+ARCH="$(uname -m)"
+if [ "$ARCH" != "aarch64" ] && [ "$ARCH" != "x86_64" ]; then
+    echo >&2
+    echo "This is $ARCH — 32-bit Pi OS. scipy has no wheel for it and building" >&2
+    echo "it from source on a Zero 2W will not finish. Reflash with the 64-bit" >&2
+    echo "image (Raspberry Pi Imager: 'Raspberry Pi OS (64-bit)')." >&2
+    exit 1
+fi
+
 # ── boot config ──────────────────────────────────────────────────────────────
 # UART for the LoRa HAT, and the camera overlay the sensor needs. Both take
 # effect at boot, so if anything changed we install the service but don't
