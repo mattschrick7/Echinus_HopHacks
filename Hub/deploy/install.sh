@@ -63,7 +63,10 @@ echo "syncing dependencies..."
 # uv otherwise downloads its own CPython, and the shared dist-packages tree then
 # belongs to a different version and the imports fail anyway.
 uv venv --system-site-packages --python /usr/bin/python3
-uv sync --package echinus-hub --active
+# --no-dev: the workspace root's dev group carries pytest, numpy and
+# opencv-python-headless for laptop development. A deployed hub needs
+# none of them, and uv includes dev groups unless told otherwise.
+uv sync --package echinus-hub --active --no-dev
 
 # ── Waveshare LoRa driver ────────────────────────────────────────────────────
 # sx126x.py isn't on PyPI; it comes out of Waveshare's demo zip. Without it the
@@ -89,7 +92,7 @@ echo "=== done ==="
 if [ "$REBOOT_NEEDED" = 1 ]; then
     echo
     echo "REBOOT REQUIRED — the boot config changed."
-    echo "  sudo reboot     (a full power cycle if the camera was just enabled)"
+    echo "  sudo reboot"
     echo
 fi
 echo "status: sudo systemctl status echinus-hub"

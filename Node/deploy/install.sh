@@ -86,7 +86,10 @@ echo "syncing dependencies (slow on first run)..."
 # uv otherwise downloads its own CPython, and the shared dist-packages tree then
 # belongs to a different version and the imports fail anyway.
 uv venv --system-site-packages --python /usr/bin/python3
-uv sync --package echinus-node --active
+# --no-dev: the workspace root's dev group carries pytest, numpy and
+# opencv-python-headless for laptop development. A deployed node needs
+# none of them, and uv includes dev groups unless told otherwise.
+uv sync --package echinus-node --active --no-dev
 
 # ── Waveshare LoRa driver ────────────────────────────────────────────────────
 # sx126x.py isn't on PyPI; it comes out of Waveshare's demo zip. Without it the
