@@ -146,3 +146,47 @@ def test_roll_turns_the_footprint():
     level = _outline(yaw_deg=0.0, pitch_deg=90.0, roll_deg=0.0)
     rolled = _outline(yaw_deg=0.0, pitch_deg=90.0, roll_deg=30.0)
     assert not np.allclose(level.max(axis=0), rolled.max(axis=0), atol=1.0)
+
+
+# ── the same pyramid, in 3D ──────────────────────────────────────────────────
+
+from geometry import view_cone, world_to_camera_azel  # noqa: E402
+
+
+def _corners(**aim):
+    """The view cone's far corners as ENU metres around the node, at 600 m."""
+    cone = view_cone(*_BASE, 0.0, range_m=600.0, **aim)
+    return np.array([_to_enu(lat, lon, alt, *_BASE, 0.0) for lat, lon, alt in cone])
+
+
+def test_cone_corners_sit_at_the_detection_range():
+    corners = _corners(yaw_deg=40.0, pitch_deg=20.0)
+    assert np.allclose(np.linalg.norm(corners, axis=1), 600.0)
+
+
+def test_cone_corners_are_the_corners_of_the_camera_view():
+    """Each corner, asked of the camera, comes back as a corner of its frame."""
+    aim = dict(yaw_deg=140.0, pitch_deg=35.0, roll_deg=12.0)
+    seen = [world_to_camera_azel(corner / np.linalg.norm(corner), **aim)
+            for corner in _corners(**aim)]
+
+    # A corner sits tan(half-angle) along both camera axes, so the camera
+    # reports it at exactly the half-angles of its own frame.
+    half_x, half_y = 62.2 / 2, 48.8 / 2
+    for az, el in seen:
+        assert abs(abs(az) - half_x) < 1e-6
+        assert abs(abs(el) - half_y) < 1e-6
+    assert len({(round(az, 3), round(el, 3)) for az, el in seen}) == 4  # four distinct corners
+
+
+def test_cone_hangs_above_the_footprint_it_flattens_into():
+    """A camera aimed up reaches into the air; the map can only show its shadow."""
+    aim = dict(yaw_deg=0.0, pitch_deg=90.0)
+    corners = _corners(**aim)
+    assert corners[:, 2].min() > 400.0  # the whole far face is well off the ground
+
+    # And the shadow of each corner falls inside the outline the map draws.
+    outline = _outline(**aim)
+    for east, north, _up in corners:
+        assert outline[:, 0].min() - 1 <= east <= outline[:, 0].max() + 1
+        assert outline[:, 1].min() - 1 <= north <= outline[:, 1].max() + 1

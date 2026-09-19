@@ -12,6 +12,13 @@
 <header>
   <h1>Echinus</h1>
   <span id="status">connecting…</span>
+
+  <!-- The map flattens the cones and the contacts; the scene keeps the height. -->
+  <span class="views">
+    <button id="view-2d" class="ghost small active">map</button>
+    <button id="view-3d" class="ghost small">3D</button>
+  </span>
+
   <span class="legend">
     <span class="key"><i class="dot node"></i>node &amp; what it sees</span>
     <span class="key"><i class="dot unconfigured"></i>needs position</span>
@@ -28,7 +35,18 @@
 </header>
 
 <main>
-  <div id="map"></div>
+  <div id="view">
+    <div id="map"></div>
+
+    <div id="scene">
+      <div class="scene-labels"></div>
+      <div class="scene-info"></div>
+      <div class="scene-hint">
+        drag to orbit · wheel to zoom · shift-drag to pan · grid squares are 1 km
+        <button id="reframe" class="ghost small">fit all</button>
+      </div>
+    </div>
+  </div>
 
   <aside>
     <div class="panel-head">
@@ -93,6 +111,8 @@
 </main>
 
 <script src="/static/leaflet.js"></script>
+<script src="/static/three.min.js"></script>
+<script src="/static/scene.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

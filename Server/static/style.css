@@ -41,11 +41,63 @@ h2 { font-size: 0.8rem; margin: 0; text-transform: uppercase; letter-spacing: 0.
 .legend { margin-left: auto; display: flex; gap: 14px; font-size: 0.8rem; color: var(--muted); }
 .key { display: flex; align-items: center; gap: 5px; }
 
+.views { display: flex; gap: 4px; }
+
 /* ── layout ───────────────────────────────────────────────────────────────── */
 
 main { flex: 1; min-height: 0; display: flex; }
 
-#map { flex: 1; background: #0d0f12; }
+#view { flex: 1; position: relative; min-width: 0; background: #0d0f12; }
+
+/* Both views stay laid out — hiding with display:none would leave Leaflet and
+   the renderer sizing themselves against a zero-height box. */
+#map, #scene { position: absolute; inset: 0; }
+#scene { overflow: hidden; }
+
+body[data-view="2d"] #scene, body[data-view="3d"] #map { visibility: hidden; }
+
+/* ── 3D scene ─────────────────────────────────────────────────────────────── */
+
+#scene canvas { display: block; }
+
+.scene-labels { position: absolute; inset: 0; pointer-events: none; }
+
+.scene-label {
+  position: absolute;
+  transform: translate(10px, -50%);
+  white-space: nowrap;
+  font-size: 0.72rem;
+  text-shadow: 0 0 4px #0d0f12, 0 0 4px #0d0f12;
+}
+.scene-label.north { transform: translate(-50%, -140%); color: #7fbf7f; }
+
+.scene-info {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 240px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(26, 29, 34, 0.9);
+  font-size: 0.8rem;
+}
+.scene-info .empty { padding: 0; }
+.scene-info .dot { vertical-align: middle; margin-right: 4px; }
+.scene-fact { display: flex; gap: 8px; margin-top: 4px; }
+.scene-fact span { width: 74px; flex: none; color: var(--muted); }
+.scene-fact div { min-width: 0; }
+
+.scene-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
 
 aside {
   width: 360px;
@@ -76,6 +128,9 @@ aside {
 .marker.disabled                   { opacity: 0.4; }
 .marker { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); cursor: pointer; }
 .dot.node { border-color: #fff; }
+
+/* The contact open in the 3D view, so the two views agree at a glance. */
+.marker.contact.selected { box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.55); }
 
 /* Contacts fade between polls instead of stepping every two seconds. */
 .leaflet-marker-icon { transition: opacity 2s linear; }
