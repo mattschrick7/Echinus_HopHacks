@@ -37,15 +37,9 @@ uv venv --system-site-packages
 uv sync --package echinus-node --active
 
 # ── Waveshare LoRa driver ────────────────────────────────────────────────────
-# sx126x.py isn't on PyPI, so it's fetched from Waveshare's demo repo and
-# dropped into the venv where `import sx126x` will find it.
-SITE_PACKAGES="$(uv run python -c 'import site; print(site.getsitepackages()[0])')"
-if [ ! -f "$SITE_PACKAGES/sx126x.py" ]; then
-    echo "fetching Waveshare sx126x driver..."
-    curl -LsSf -o "$SITE_PACKAGES/sx126x.py" \
-        https://raw.githubusercontent.com/waveshareteam/Raspberry-Pi-LoRa-HAT/main/SX126X_LoRa_HAT_Code/raspberrypi/python/sx126x.py \
-        || echo "  fetch failed — copy sx126x.py into $SITE_PACKAGES manually"
-fi
+# sx126x.py isn't on PyPI; it comes out of Waveshare's demo zip. Without it the
+# node still detects motion but can't transmit, so this is a hard failure.
+bash "$REPO_DIR/shared/fetch-sx126x.sh"
 
 # ── systemd ──────────────────────────────────────────────────────────────────
 echo "installing systemd service..."
