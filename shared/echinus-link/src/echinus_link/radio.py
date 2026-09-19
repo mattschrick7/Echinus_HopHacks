@@ -10,6 +10,12 @@ Waveshare SX126x HAT demo repository onto the Pi's PYTHONPATH (the install
 scripts in Node/deploy and Hub/deploy do this for you).
 
 Every radio in one deployment must agree on frequency, address and air speed.
+
+One thing the HAT's firmware imposes on us: it runs in fixed-point transmission
+mode, where the first three bytes handed to the module are not payload but a
+destination — address high, address low, channel. Miss that and the module
+happily transmits your packet's own first bytes as an address, to nobody, on
+whatever channel byte three happened to be. See address_header().
 """
 from __future__ import annotations
 
@@ -20,12 +26,32 @@ _BURST_SETTLE_S = 0.2  # once bytes start arriving, wait this long for the rest
 
 # Defaults — override per deployment in node.toml / hub.toml.
 DEFAULTS = {
-    "serial_port": "/dev/ttyS0",
+    "serial_port": "/dev/serial0",
     "frequency_mhz": 915,
     "address": 0,
     "power_dbm": 22,
     "air_speed_bps": 2400,
 }
+
+
+def address_header(address: int, channel: int) -> bytes:
+    """The six bytes Waveshare's firmware expects in front of a payload.
+
+    The first three are consumed by the module as the destination (address
+    high, address low, channel) and never go on the air. The last three are
+    ordinary payload that Waveshare's demo receiver interprets as the sender's
+    own address and channel; we keep the convention so their tools can read our
+    traffic, and packets.extract() skips them by scanning for MAGIC.
+
+    Channel is the frequency offset the driver computes: MHz - 850 on the
+    high band, MHz - 410 on the low one.
+    """
+    if not 0 <= address <= 0xFFFF:
+        raise ValueError(f"address out of range: {address}")
+    if not 0 <= channel <= 0xFF:
+        raise ValueError(f"channel out of range: {channel}")
+    hi, lo = address >> 8, address & 0xFF
+    return bytes([hi, lo, channel, hi, lo, channel])
 
 
 class Radio:
@@ -60,8 +86,12 @@ class Radio:
         # so recv() below reads the driver's serial port directly.
         self._serial = getattr(self._hat, "ser", None)
 
+        # Everything in a deployment shares one address and channel, so a node
+        # addresses the hub by addressing the address they both hold.
+        self._header = address_header(address, self._hat.offset_freq)
+
     def send(self, data: bytes) -> None:
-        self._hat.send(data)
+        self._hat.send(self._header + data)
 
     def recv(self, timeout: float = 1.0) -> bytes:
         """One radio burst of raw bytes, or b"" if nothing arrived in `timeout`."""
