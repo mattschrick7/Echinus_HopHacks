@@ -50,8 +50,20 @@ Fix = tuple[np.ndarray, set]
 
 
 def expire(conn, now_ms: int) -> None:
-    """Close tracks not seen for LOST_AFTER_MS, as of node time `now_ms`."""
+    """Close tracks not seen for LOST_AFTER_MS, as of node time `now_ms`.
+
+    Used as contacts arrive, where everything is on the nodes' clocks."""
     db.close_tracks(conn, now_ms - LOST_AFTER_MS)
+
+
+def expire_stale(conn) -> None:
+    """Close tracks that have had no contact for LOST_AFTER_MS of real time.
+
+    For when nothing arrives at all — a drone out of every camera's view sends
+    nothing. Judged on this Server's clock, never the nodes': real nodes' clocks
+    can sit seconds off the Server's (NTP drift, LoRa and relay delay), and
+    comparing the two would close every track as it opened."""
+    db.close_stale_tracks(conn, LOST_AFTER_MS / 1000.0)
 
 
 def _state(track: dict, origin) -> tuple[np.ndarray, np.ndarray | None]:
@@ -79,9 +91,11 @@ def assign(conn, fixes: list[Fix], t_ms: int, origin) -> list[int]:
     predictions = []
     for track in tracks:
         position, velocity = _state(track, origin)
-        dt = max((t_ms - track["last_ms"]) / 1000.0, 0.0)
+        # Negative when a bucket arrives late, after a newer one: over LoRa
+        # that happens. Predict backwards to where it was, then.
+        dt = (t_ms - track["last_ms"]) / 1000.0
         predicted = position if velocity is None else position + velocity * dt
-        gate = GATE_M + (MAX_SPEED_MPS if velocity is None else MANEUVER_MPS) * dt
+        gate = GATE_M + (MAX_SPEED_MPS if velocity is None else MANEUVER_MPS) * abs(dt)
         predictions.append((position, velocity, predicted, gate, dt))
 
     # Every fix-track pair inside its gate, cheapest first.
@@ -115,25 +129,33 @@ def _update(conn, track: dict, prediction, fix: Fix, t_ms: int, origin) -> int:
     """Move a track toward a new contact, and confirm it if it has earned it."""
     position, velocity, predicted, _gate, dt = prediction
     point, nodes = fix
-    dt = max(dt, MIN_DT_S)
 
-    if velocity is None:
+    if dt <= 0:
+        # A late contact: it belongs to the track and joins its path, but it is
+        # history — steering the filter with it would yank the velocity.
+        pass
+    elif velocity is None:
         # Second contact: the first real estimate of how it's moving.
+        dt = max(dt, MIN_DT_S)
         velocity = (point - position) / dt
         position = position + ALPHA * (point - position)
     else:
+        dt = max(dt, MIN_DT_S)
         residual = point - predicted
         position = predicted + ALPHA * residual
         velocity = velocity + BETA * residual / dt
 
-    lat, lon, alt = enu_to_geodetic(position, *origin)
     changes = {
         "last_ms": max(t_ms, track["last_ms"]),
-        "lat": lat, "lon": lon, "alt_m": alt,
-        "vel_e": float(velocity[0]), "vel_n": float(velocity[1]), "vel_u": float(velocity[2]),
         "contact_count": track["contact_count"] + 1,
         "node_ids": set(track["node_ids"]) | set(nodes),
     }
+    if dt > 0:
+        lat, lon, alt = enu_to_geodetic(position, *origin)
+        changes.update({"lat": lat, "lon": lon, "alt_m": alt})
+        if velocity is not None:
+            changes.update({"vel_e": float(velocity[0]), "vel_n": float(velocity[1]),
+                            "vel_u": float(velocity[2])})
     if track["status"] == "tentative" and changes["contact_count"] >= CONFIRM_HITS:
         changes["status"] = "active"
         changes["number"] = db.next_target_number(conn)

@@ -54,6 +54,12 @@ def record(conn, message: dict) -> None:
     if abs(az) > node["fov_h_deg"] / 2 + VIEW_SLACK_DEG or abs(el) > node["fov_v_deg"] / 2 + VIEW_SLACK_DEG:
         db.flag_out_of_view(conn, node_id, f"az {az:.1f}° el {el:.1f}°")
 
+    # Two hubs in earshot of one node both forward its packet. It is one
+    # detection; stored twice, the copies would cross each other's partners
+    # and make a second contact — and a second target — at the same spot.
+    if db.detection_exists(conn, node_id, node_time_ms, az, el):
+        return
+
     world = None
     if node["configured"]:
         world = camera_to_world_azel(az, el, node["yaw_deg"], node["pitch_deg"], node["roll_deg"])

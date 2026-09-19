@@ -33,7 +33,6 @@ to join it before the bucket is closed.
 from __future__ import annotations
 
 import asyncio
-import time
 from collections import defaultdict
 
 import numpy as np
@@ -181,6 +180,34 @@ def process(conn, detections: list[dict]) -> int:
     return written
 
 
+def step(conn, watermark: int, pending: list[dict]) -> tuple[int, list[dict]]:
+    """One pass of the background loop: close stale tracks, read what's new,
+    triangulate every bucket that is complete. Returns the new watermark and
+    the detections still held back. Split out of run() so tests can drive
+    exactly what the Server does, one second at a time."""
+    # A drone that leaves every camera's view sends nothing at all, so close
+    # tracks on this Server's clock too, not only as detections arrive.
+    targets.expire_stale(conn)
+
+    new = db.detections_after(conn, watermark)
+    if new:
+        watermark = new[-1]["id"]
+        pending = pending + new
+    if not pending:
+        return watermark, pending
+
+    # Hold back the newest bucket so late arrivals can still join it.
+    newest_bucket = max(d["node_time_ms"] // BUCKET_MS for d in pending)
+    ready = [d for d in pending if d["node_time_ms"] // BUCKET_MS < newest_bucket]
+    pending = [d for d in pending if d["node_time_ms"] // BUCKET_MS == newest_bucket]
+
+    if ready:
+        count = process(conn, ready)
+        if count:
+            print(f"tracked {count} contact(s)", flush=True)
+    return watermark, pending
+
+
 async def run(conn) -> None:
     """Background loop. Started by the Server at boot."""
     watermark = db.latest_detection_id(conn)
@@ -189,23 +216,4 @@ async def run(conn) -> None:
 
     while True:
         await asyncio.sleep(POLL_S)
-        # A drone that leaves every camera's view sends nothing at all, so
-        # close tracks on the wall clock too, not only when detections arrive.
-        targets.expire(conn, int(time.time() * 1000))
-
-        new = db.detections_after(conn, watermark)
-        if new:
-            watermark = new[-1]["id"]
-            pending.extend(new)
-        if not pending:
-            continue
-
-        # Hold back the newest bucket so late arrivals can still join it.
-        newest_bucket = max(d["node_time_ms"] // BUCKET_MS for d in pending)
-        ready = [d for d in pending if d["node_time_ms"] // BUCKET_MS < newest_bucket]
-        pending = [d for d in pending if d["node_time_ms"] // BUCKET_MS == newest_bucket]
-
-        if ready:
-            count = process(conn, ready)
-            if count:
-                print(f"tracked {count} contact(s)", flush=True)
+        watermark, pending = step(conn, watermark, pending)

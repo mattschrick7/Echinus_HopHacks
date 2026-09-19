@@ -378,6 +378,27 @@ def close_tracks(conn, older_than_ms: int) -> None:
     conn.commit()
 
 
+def close_stale_tracks(conn, older_than_s: float) -> None:
+    """The same as close_tracks, judged on this Server's clock: tracks with no
+    contact for `older_than_s` seconds of real time. updated_at is only ever
+    set when a contact joins, so it is when the track was last seen."""
+    conn.execute(
+        "UPDATE tracks SET status = CASE WHEN number IS NULL THEN 'dropped' ELSE 'lost' END "
+        "WHERE status IN ('tentative', 'active') AND updated_at < datetime('now', ?)",
+        (f"-{older_than_s} seconds",),
+    )
+    conn.commit()
+
+
+def detection_exists(conn, node_id: str, node_time_ms: int, cam_az_deg: float, cam_el_deg: float) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM detections WHERE node_time_ms = ? AND node_id = ? "
+        "AND cam_az_deg = ? AND cam_el_deg = ? LIMIT 1",
+        (node_time_ms, node_id, cam_az_deg, cam_el_deg),
+    ).fetchone()
+    return row is not None
+
+
 def next_target_number(conn) -> int:
     row = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM tracks").fetchone()
     return row["n"]

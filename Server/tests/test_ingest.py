@@ -92,3 +92,13 @@ def test_an_angle_outside_the_set_view_is_flagged(conn):
     # Correcting the field of view in the dashboard clears the warning.
     db.update_node(conn, "node-a", {"fov_h_deg": 90.0})
     assert db.get_node(conn, "node-a")["out_of_view_at"] is None
+
+
+def test_the_same_packet_through_two_hubs_is_stored_once(conn):
+    place(conn, "node-a", 0.0, 0.0, 0.0, 30.0)
+    for hub in ("hub-1", "hub-2"):
+        message = over_the_air("node-a", 1_000_000, 3.5, -2.0, received_ms=1_000_100)
+        message["hub_id"] = hub
+        ingest.record(conn, message)
+    ingest.record(conn, over_the_air("node-a", 1_000_200, 3.5, -2.0))  # a new moment: kept
+    assert len(db.list_detections(conn)) == 2
