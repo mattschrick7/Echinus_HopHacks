@@ -26,3 +26,7 @@ sx126x.py
 # Test footage captured on a node
 Node/testing/samples/*
 !Node/testing/samples/.gitkeep
+
+# Others
+.DS_Store
+Server/.DS_Store
