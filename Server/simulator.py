@@ -37,6 +37,7 @@ SEND_HZ = float(os.environ.get("SIM_HZ", "5"))
 NOISE_DEG = float(os.environ.get("SIM_NOISE_DEG", "0.1"))
 FALSE_POSITIVE_RATE = float(os.environ.get("SIM_FP_RATE", "0.02"))
 LOOP_S = float(os.environ.get("SIM_LOOP_S", "40"))
+RECONNECT_S = 2.0     # wait between attempts when the Server is unreachable
 
 RING_M = 500.0        # nodes sit on a circle this big, for decent geometry
 HALF_FOV_DEG = 31.0   # what the node's camera can see either side of the axis
@@ -119,13 +120,27 @@ def observations(nodes: list[dict], elapsed: float) -> list[tuple[str, float, fl
 
 async def main() -> None:
     nodes = build_nodes()
-    configure_on_server(nodes)
+    start = time.monotonic()  # outside the loop, so targets carry on across reconnects
 
+    # Survive the Server going away, as a real hub does: `uvicorn --reload`
+    # restarts it on every Python edit, and a restart closes this socket.
+    while True:
+        try:
+            # Re-placing the nodes is harmless if they exist, and puts them back
+            # if the database was wiped while the Server was down.
+            await asyncio.to_thread(configure_on_server, nodes)
+            await simulate(nodes, start)
+        except Exception as exc:  # any disconnect: log, wait, try again
+            print(f"server unreachable ({exc!r}); retrying in {RECONNECT_S:.0f}s", flush=True)
+            await asyncio.sleep(RECONNECT_S)
+
+
+async def simulate(nodes: list[dict], start: float) -> None:
+    """Stream detections over one websocket connection until it drops."""
     async with websockets.connect(SERVER_URL) as ws:
         await ws.send(json.dumps({"type": "hello", "hub_id": "sim-hub"}))
         print(f"simulating {len(nodes)} nodes, {len(TARGETS)} targets -> {SERVER_URL}", flush=True)
 
-        start = time.monotonic()
         while True:
             elapsed = (time.monotonic() - start) % LOOP_S
             timestamp_ms = int(time.time() * 1000)  # one shared instant per tick
