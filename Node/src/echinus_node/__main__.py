@@ -13,6 +13,7 @@ source of truth for all of that.
 Run:
     echinus-node --config node.toml
     echinus-node --config node.toml --dry-run --preview    # no radio, browser view
+    echinus-node --config node.toml --beacon               # radio only, no camera
 """
 from __future__ import annotations
 
@@ -28,13 +29,14 @@ from echinus_node.camera import EndOfStream, open_camera
 from echinus_node.detector import MotionDetector
 
 HEARTBEAT_S = 60.0  # how often to tell the Server we're alive when nothing moves
+BEACON_S = 2.0      # how often --beacon transmits
 
 
 class _DryRunRadio:
     """Stand-in for the LoRa HAT so the node runs on a laptop."""
 
     def send(self, data: bytes) -> None:
-        pass
+        print(f"  would transmit {len(data)}B: {data.hex(' ')}")
 
     def close(self) -> None:
         pass
@@ -52,6 +54,32 @@ def _open_radio(cfg: dict, dry_run: bool):
     from echinus_link.radio import from_config
 
     return from_config(cfg.get("lora", {}))
+
+
+def beacon(cfg: dict, radio, count: int | None) -> None:
+    """Transmit heartbeats and nothing else, with no camera involved.
+
+    This is the other half of `echinus-hub --listen`: it proves the two radios
+    reach each other, in the real packet format, before a camera or a Server is
+    in the picture. Waveshare's own demo can read these too — its receiver
+    prints the sender address and channel from the three header bytes we send
+    ahead of every packet.
+    """
+    node_id = cfg["node"]["id"]
+    started = time.monotonic()
+    sent = 0
+
+    print(f"[{node_id}] beacon every {BEACON_S:.0f}s — Ctrl-C to stop", flush=True)
+    try:
+        while count is None or sent < count:
+            uptime = int(time.monotonic() - started)
+            radio.send(packets.encode_heartbeat(node_id, uptime))
+            sent += 1
+            print(f"[{node_id}] HEARTBEAT  up={uptime}s  ({sent} sent)", flush=True)
+            time.sleep(BEACON_S)
+    except KeyboardInterrupt:
+        pass
+    print(f"[{node_id}] beacon stopped after {sent} packet(s)", flush=True)
 
 
 def run(cfg: dict, radio, source: int | str, preview_port: int | None, loop_file: bool) -> None:
@@ -145,6 +173,11 @@ def main() -> None:
     parser.add_argument("--loop", action="store_true", help="Restart a video --source when it ends")
     parser.add_argument("--preview", action="store_true", help="Serve an MJPEG view with detection markers")
     parser.add_argument("--preview-port", type=int, default=8080)
+    parser.add_argument("--beacon", nargs="?", type=int, const=0, default=None,
+                        metavar="COUNT",
+                        help="Send heartbeats and nothing else — no camera. Pair it with "
+                             "`echinus-hub --listen` to prove the radio link. Optionally "
+                             "give a packet count; the default is to keep going")
     args = parser.parse_args()
 
     try:
@@ -159,7 +192,10 @@ def main() -> None:
 
     radio = _open_radio(cfg, args.dry_run)
     try:
-        run(cfg, radio, source, args.preview_port if args.preview else None, args.loop)
+        if args.beacon is not None:
+            beacon(cfg, radio, args.beacon or None)  # --beacon with no count: forever
+        else:
+            run(cfg, radio, source, args.preview_port if args.preview else None, args.loop)
     finally:
         radio.close()
 

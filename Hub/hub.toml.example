@@ -13,7 +13,12 @@ url = "ws://192.168.1.50:8000/ws/hub"
 [lora]
 # Must match every node's [lora] settings exactly.
 serial_port   = "/dev/serial0"  # alias for the GPIO UART, whichever it is
-frequency_mhz = 915
-address       = 0
-power_dbm     = 22
-air_speed_bps = 2400
+frequency_mhz = 915   # 851-930 (E22-900T22S) or 411-493 (E22-400T22S)
+address       = 0     # 0-65535; must be the address the nodes send to
+power_dbm     = 22    # one of 10, 13, 17, 22 — the driver knows no others
+air_speed_bps = 2400  # 1200, 2400, 4800, 9600, 19200, 38400 or 62500
+
+# Have the module append a signal-strength byte to everything it receives.
+# Waveshare's demo turns this on; we leave it off, because that extra byte
+# lands in the receive stream and could be mistaken for the start of a packet.
+rssi = false

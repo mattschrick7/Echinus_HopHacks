@@ -30,7 +30,18 @@ activity_ceiling = 0.35   # occupancy at which a pixel is fully suppressed
 [lora]
 # Must match the Hub's [lora] settings exactly.
 serial_port   = "/dev/serial0"  # alias for the GPIO UART, whichever it is
-frequency_mhz = 915
-address       = 0
-power_dbm     = 22
-air_speed_bps = 2400
+frequency_mhz = 915   # 851-930 (E22-900T22S) or 411-493 (E22-400T22S)
+address       = 0     # 0-65535; 65535 hears every address on this channel
+power_dbm     = 22    # one of 10, 13, 17, 22 — the driver knows no others
+air_speed_bps = 2400  # 1200, 2400, 4800, 9600, 19200, 38400 or 62500
+
+# Which radio to address. Leave it out and packets go to our own address,
+# which is what you want when the whole deployment shares one. Set it to
+# 65535 to broadcast.
+# destination = 65535
+
+# Have the module append a signal-strength byte to everything it receives.
+# Waveshare's demo turns this on; we leave it off, because that extra byte
+# lands in the receive stream and could be mistaken for the start of a packet.
+# It only affects what *this* radio receives, never what it transmits.
+rssi = false

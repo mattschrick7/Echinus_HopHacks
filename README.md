@@ -41,6 +41,7 @@ Echinus/
 │       radio.py              the HAT, wrapped in send()/recv()
 ├── shared/configure-boot.sh  camera overlay + UART, written into config.txt
 ├── shared/fetch-sx126x.sh    pulls Waveshare's driver out of their demo zip
+├── shared/radio_check.py     the HAT, driven exactly as Waveshare's demo does
 │
 ├── Node/                     Pi Zero: camera -> LoRa
 │       camera.py             Pi camera, or OpenCV off the Pi
@@ -103,6 +104,42 @@ bash ~/echinus/Node/deploy/install.sh    # creates node.toml, then run it again
 
 Set `[node] id` in `Node/node.toml` — unique, 12 characters or fewer. That's
 the only per-node setting that matters.
+
+### Prove the radio link first
+
+Before a camera or a Server is involved, check that the two HATs can reach each
+other. Each radio prints what the module actually kept when it starts — the
+driver's own `set()` can't fail, so an unconfigured HAT otherwise looks exactly
+like a working one that nobody is talking to.
+
+Hub, then node:
+
+```bash
+uv run echinus-hub  --config Hub/hub.toml  --listen --raw   # on the Pi 4
+uv run echinus-node --config Node/node.toml --beacon        # on the Pi Zero
+```
+
+`--beacon` sends heartbeats and touches nothing else; `--raw` prints every byte
+the hub hears, so you can see traffic that isn't ours — including Waveshare's
+own demo, whose messages are plain strings behind the same three-byte sender
+header we use.
+
+If that stays silent, drop below our code entirely. `shared/radio_check.py`
+constructs `sx126x` exactly as Waveshare's `main.py` does and uses the driver's
+own `send()`/`receive()`, with the settings from your `[lora]` table:
+
+```bash
+uv run python shared/radio_check.py listen --config Hub/hub.toml
+uv run python shared/radio_check.py send   --config Node/node.toml
+```
+
+Works there but not above, and the fault is ours. Fails there too, and it's
+hardware or settings — in which case, in order of likelihood:
+
+- **The M0 and M1 jumpers must be removed** when the HAT is on a Pi.
+- The serial console must be off and the UART on. `install.sh` does both.
+- An antenna must be attached before transmitting at 22dBm.
+- Every radio must agree on frequency, address and air speed.
 
 ### Then, in the dashboard
 
@@ -202,7 +239,16 @@ The dashboard is a thin client over these; `curl` works just as well.
 ## Things worth knowing
 
 - **Every radio must agree.** Frequency, address and air speed in `[lora]`
-  have to match across every node and the hub, or nothing arrives.
+  have to match across every node and the hub, or nothing arrives. Only the
+  values Waveshare's driver has table entries for work — `radio.py` lists them
+  and rejects anything else up front, because the driver itself fails with a
+  `TypeError` from inside its own code.
+- **The HAT runs in fixed-point mode**, which Waveshare's driver hard-codes.
+  Every transmission must start with three bytes of destination (address high,
+  address low, channel), or the module reads your payload's first bytes as an
+  address and sends it to nobody. `radio.py` adds them, plus the three bytes
+  Waveshare's demo receiver reads back as the sender — so their tools and ours
+  can read each other's traffic.
 - **Clocks matter.** Detections are matched by the node's own timestamp, so
   the Pis need NTP. The systemd units wait for time sync; if the hub is the
   only network, point `chrony` on the nodes at it.

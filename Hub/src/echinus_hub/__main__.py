@@ -10,6 +10,7 @@ Run:
     echinus-hub --config hub.toml
     echinus-hub --server ws://192.168.1.50:8000/ws/hub    # override the config
     echinus-hub --listen                                  # print packets, don't relay
+    echinus-hub --listen --raw                            # ...and every byte behind them
 """
 from __future__ import annotations
 
@@ -29,7 +30,21 @@ def _load_config(path: str) -> dict:
         return tomllib.load(f)
 
 
-def _listen(radio) -> None:
+def _describe(burst: bytes) -> str:
+    """A burst as hex and as text, for eyeballing traffic that isn't ours.
+
+    Waveshare's demo sends plain strings, and its first three bytes are the
+    sender's address and channel rather than payload — so print both halves
+    and let the operator recognise what they are looking at.
+    """
+    text = "".join(chr(b) if 32 <= b < 127 else "." for b in burst)
+    if len(burst) >= 3:
+        sender = (burst[0] << 8) | burst[1]
+        return f"{burst.hex(' ')}\n         from address {sender} channel {burst[2]}: {text[3:]!r}"
+    return f"{burst.hex(' ')}  {text!r}"
+
+
+def _listen(radio, raw: bool = False) -> None:
     """Field debug: print every packet the radio hears and relay nothing."""
     from echinus_hub.relay import summarise
 
@@ -37,11 +52,14 @@ def _listen(radio) -> None:
     buffer = b""
     try:
         while True:
-            buffer += radio.recv(timeout=1.0)
+            burst = radio.recv(timeout=1.0)
+            if raw and burst:
+                print(f"  raw  {_describe(burst)}", flush=True)
+            buffer += burst
             found, buffer = packets.extract(buffer)
-            for raw in found:
+            for packet in found:
                 try:
-                    print(summarise(packets.decode(raw)), flush=True)
+                    print(summarise(packets.decode(packet)), flush=True)
                 except ValueError as exc:
                     print(f"bad packet: {exc}", flush=True)
     except KeyboardInterrupt:
@@ -67,6 +85,9 @@ def main() -> None:
     parser.add_argument("--config", default="hub.toml")
     parser.add_argument("--server", default=None, help="Override the server websocket URL")
     parser.add_argument("--listen", action="store_true", help="Print received packets instead of relaying")
+    parser.add_argument("--raw", action="store_true",
+                        help="With --listen, also print every byte the radio hears, "
+                             "including traffic from Waveshare's own demo")
     args = parser.parse_args()
 
     try:
@@ -80,7 +101,10 @@ def main() -> None:
     radio = from_config(cfg.get("lora", {}))
 
     if args.listen:
-        _listen(radio)
+        try:
+            _listen(radio, raw=args.raw)
+        finally:
+            radio.close()  # or the next run finds the serial port still held
         return
 
     server_url = args.server or cfg["server"]["url"]
