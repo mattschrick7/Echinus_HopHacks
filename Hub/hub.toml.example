@@ -12,7 +12,7 @@ url = "ws://192.168.1.50:8000/ws/hub"
 
 [lora]
 # Must match every node's [lora] settings exactly.
-serial_port   = "/dev/ttyS0"
+serial_port   = "/dev/serial0"  # alias for the GPIO UART, whichever it is
 frequency_mhz = 915
 address       = 0
 power_dbm     = 22

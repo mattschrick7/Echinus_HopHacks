@@ -39,6 +39,8 @@ Echinus/
 ├── shared/echinus-link/      the LoRa wire format + SX1262 driver
 │       packets.py            two packet types; the only bytes on the radio
 │       radio.py              the HAT, wrapped in send()/recv()
+├── shared/configure-boot.sh  camera overlay + UART, written into config.txt
+├── shared/fetch-sx126x.sh    pulls Waveshare's driver out of their demo zip
 │
 ├── Node/                     Pi Zero: camera -> LoRa
 │       camera.py             Pi camera, or OpenCV off the Pi
@@ -143,14 +145,16 @@ node alone never produces a contact. Two are the minimum; three make it solid.
   that kills camera init while leaving wifi up; `vcgencmd get_throttled`
   should read `0x0`.
 
-In `/boot/firmware/config.txt`, then a full power cycle:
+`install.sh` writes the boot config for you — the camera overlay and the UART
+the LoRa HAT needs — into a marked block in `/boot/firmware/config.txt`, backs
+up the original, and tells you to reboot. For a different sensor:
 
-```
-camera_auto_detect=0
-dtoverlay=imx219
+```bash
+CAMERA_OVERLAY=imx477 bash Node/deploy/install.sh
 ```
 
-Check it with `rpicam-hello --list-cameras` (expect `imx219`). Ignore
+The camera wants a full power cycle, not just a reboot. Check it afterwards
+with `rpicam-hello --list-cameras` (expect `imx219`). Ignore
 `vcgencmd get_camera` — it reports `supported=0` even when libcamera is fine.
 
 ## Development

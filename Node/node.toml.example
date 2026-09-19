@@ -29,7 +29,7 @@ activity_ceiling = 0.35   # occupancy at which a pixel is fully suppressed
 
 [lora]
 # Must match the Hub's [lora] settings exactly.
-serial_port   = "/dev/ttyS0"
+serial_port   = "/dev/serial0"  # alias for the GPIO UART, whichever it is
 frequency_mhz = 915
 address       = 0
 power_dbm     = 22

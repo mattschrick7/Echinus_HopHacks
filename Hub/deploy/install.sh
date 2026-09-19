@@ -21,6 +21,20 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
+# ── boot config ──────────────────────────────────────────────────────────────
+# UART for the LoRa HAT. It takes effect at boot, so if anything changed we
+# install the service but don't start it yet.
+REBOOT_NEEDED=0
+set +e
+bash "$REPO_DIR/shared/configure-boot.sh"
+boot_status=$?
+set -e
+case $boot_status in
+    0)  ;;
+    10) REBOOT_NEEDED=1 ;;
+    *)  echo "boot config failed" >&2; exit $boot_status ;;
+esac
+
 # ── apt packages ─────────────────────────────────────────────────────────────
 # sx126x.py imports RPi.GPIO and pyserial at module scope. RPi.GPIO is apt-only
 # on Pi OS, so both come from apt and the venv below shares system packages.
@@ -63,9 +77,20 @@ sed -e "s|%REPO_DIR%|$REPO_DIR|g" -e "s|%USER%|$USER|g" \
     | sudo tee /etc/systemd/system/echinus-hub.service > /dev/null
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now echinus-hub.service
+if [ "$REBOOT_NEEDED" = 1 ]; then
+    # Starting now would just crash-loop until the hardware config is live.
+    sudo systemctl enable echinus-hub.service
+else
+    sudo systemctl enable --now echinus-hub.service
+fi
 
 echo
 echo "=== done ==="
+if [ "$REBOOT_NEEDED" = 1 ]; then
+    echo
+    echo "REBOOT REQUIRED — the boot config changed."
+    echo "  sudo reboot     (a full power cycle if the camera was just enabled)"
+    echo
+fi
 echo "status: sudo systemctl status echinus-hub"
 echo "logs:   sudo journalctl -fu echinus-hub"
