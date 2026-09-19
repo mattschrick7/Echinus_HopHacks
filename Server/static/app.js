@@ -290,6 +290,8 @@ function showInScene(contactId) {
 el("view-2d").onclick = () => setView("2d");
 el("view-3d").onclick = () => setView("3d");
 el("reframe").onclick = () => Scene3D.reframe();
+el("basemap").onclick = () =>
+  el("basemap").classList.toggle("active", Scene3D.toggleBasemap());
 
 function fitOnce(nodes, contacts) {
   if (fitted) return;

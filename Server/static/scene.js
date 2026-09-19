@@ -175,11 +175,142 @@ const Scene3D = (() => {
 
     const grid = new THREE.GridHelper(size, cells, COLOUR.gridEdge, COLOUR.grid);
     grid.material.transparent = true;
-    grid.material.opacity = 0.55;
+    // Over the map the grid is a ruler, not the floor, so it steps back.
+    grid.material.opacity = basemapOn ? 0.22 : 0.55;
     group.add(grid);
 
     group.add(line([new THREE.Vector3(), new THREE.Vector3(0, 0, -size / 2)], COLOUR.north, 0.5));
     addLabel("N", "north", new THREE.Vector3(0, 0, -size / 2));
+
+    updateBasemap(size);
+  }
+
+  // -- the map, on the ground -------------------------------------------------
+  //
+  // The same OpenStreetMap tiles the 2D view uses, laid flat at the nodes'
+  // altitude, so a contact is somewhere rather than just some height. Tiles
+  // are placed by their own Mercator corners rather than by a scale factor,
+  // which keeps them honest against the flat-earth frame everything else
+  // uses: over a few kilometres the two agree to well under a pixel.
+
+  const TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+  const TILE_SUBDOMAINS = ["a", "b", "c"];
+  const EQUATOR_M = 40075016.686;
+  const TILES_WANTED = 6;         // roughly, across the ground the scene covers
+  const MAX_TILES_ACROSS = 9;     // a ceiling on what one view will fetch
+  const MIN_ZOOM = 8, MAX_ZOOM = 18;
+
+  let basemapGroup = null;
+  let basemapKey = null;          // zoom and tile range currently laid out
+  let basemapOn = true;
+  const tileTextures = new Map(); // url -> texture, kept across rebuilds
+
+  const lonToTile = (lon, zoom) => ((lon + 180) / 360) * 2 ** zoom;
+
+  const latToTile = (lat, zoom) => {
+    const phi = radians(lat);
+    return ((1 - Math.log(Math.tan(phi) + 1 / Math.cos(phi)) / Math.PI) / 2) * 2 ** zoom;
+  };
+
+  const tileToLon = (x, zoom) => (x / 2 ** zoom) * 360 - 180;
+
+  const tileToLat = (y, zoom) =>
+    (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / 2 ** zoom))) * 180) / Math.PI;
+
+  // Enough detail to be worth drawing, few enough tiles to be polite to the
+  // tile servers: pick the zoom that puts about TILES_WANTED across the scene.
+  function zoomFor(size) {
+    const metresPerTile = (zoom) => (EQUATOR_M * Math.cos(radians(origin.lat))) / 2 ** zoom;
+    let zoom = MIN_ZOOM;
+    while (zoom < MAX_ZOOM && metresPerTile(zoom + 1) * TILES_WANTED > size) zoom += 1;
+    return zoom;
+  }
+
+  function updateBasemap(size) {
+    if (!origin) return;
+    const zoom = zoomFor(size);
+    const half = size / 2;
+
+    // The tiles covering the scene's ground square, clamped so one view can
+    // never ask for hundreds.
+    const west = lonToTile(origin.lon - half / (METRES_PER_DEGREE * Math.cos(radians(origin.lat))), zoom);
+    const east = lonToTile(origin.lon + half / (METRES_PER_DEGREE * Math.cos(radians(origin.lat))), zoom);
+    const north = latToTile(origin.lat + half / METRES_PER_DEGREE, zoom);
+    const south = latToTile(origin.lat - half / METRES_PER_DEGREE, zoom);
+
+    const range = {
+      x0: Math.floor(west), x1: Math.floor(east),
+      y0: Math.floor(north), y1: Math.floor(south),
+    };
+    range.x1 = Math.min(range.x1, range.x0 + MAX_TILES_ACROSS - 1);
+    range.y1 = Math.min(range.y1, range.y0 + MAX_TILES_ACROSS - 1);
+
+    const key = `${zoom}/${range.x0},${range.y0}-${range.x1},${range.y1}/${basemapOn}`;
+    if (key === basemapKey) return;   // same ground, same tiles: leave it alone
+    basemapKey = key;
+
+    if (basemapGroup) {
+      scene.remove(basemapGroup);     // textures are cached, so don't dispose them
+      basemapGroup = null;
+    }
+    if (!basemapOn) {
+      needsRender = true;
+      return;
+    }
+
+    basemapGroup = new THREE.Group();
+    scene.add(basemapGroup);
+    for (let x = range.x0; x <= range.x1; x += 1) {
+      for (let y = range.y0; y <= range.y1; y += 1) basemapGroup.add(tile(x, y, zoom));
+    }
+    needsRender = true;
+  }
+
+  function tile(x, y, zoom) {
+    const url = TILE_URL
+      .replace("{s}", TILE_SUBDOMAINS[(x + y) % TILE_SUBDOMAINS.length])
+      .replace("{z}", zoom)
+      .replace("{x}", x)
+      .replace("{y}", y);
+
+    // Corner to corner in the scene's own frame, so a tile lands where its
+    // ground really is rather than where a nominal tile width would put it.
+    const topLeft = toScene(tileToLat(y, zoom), tileToLon(x, zoom), origin.alt);
+    const bottomRight = toScene(tileToLat(y + 1, zoom), tileToLon(x + 1, zoom), origin.alt);
+
+    const geometry = new THREE.PlaneGeometry(bottomRight.x - topLeft.x, bottomRight.z - topLeft.z);
+    geometry.rotateX(-Math.PI / 2);   // stand it on the ground, north at the top
+
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      // Tinted well down: full-brightness tiles glare against a dark scene
+      // and bury the contacts drawn above them. Streets stay readable, which
+      // is all the ground has to do.
+      color: 0x6b7076,
+      map: texture(url),
+      depthWrite: false,             // the grid and drop lines sit on top
+    }));
+    mesh.position.set((topLeft.x + bottomRight.x) / 2, -1, (topLeft.z + bottomRight.z) / 2);
+    mesh.renderOrder = -1;
+    return mesh;
+  }
+
+  function texture(url) {
+    if (tileTextures.has(url)) return tileTextures.get(url);
+    const loaded = new THREE.TextureLoader()
+      .setCrossOrigin("anonymous")   // WebGL refuses a texture it can't vouch for
+      .load(url, () => { needsRender = true; }, undefined, () => { needsRender = true; });
+    loaded.minFilter = THREE.LinearFilter;  // tiles aren't powers of two once tinted
+    loaded.generateMipmaps = false;
+    tileTextures.set(url, loaded);
+    return loaded;
+  }
+
+  // Off for a clean look, or when there is no way out to the tile servers.
+  function toggleBasemap() {
+    basemapOn = !basemapOn;
+    basemapKey = null;
+    setNodes(nodes, colours);   // redraws the grid at its other opacity too
+    return basemapOn;
   }
 
   const spread = (points) =>
@@ -767,6 +898,6 @@ const Scene3D = (() => {
   return {
     init, isReady, show, hide,
     setNodes, setContacts, previewCone,
-    setSelected, focus, reframe, setPath,
+    setSelected, focus, reframe, setPath, toggleBasemap,
   };
 })();
