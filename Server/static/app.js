@@ -248,13 +248,20 @@ function setView(which) {
   // only ever wants the map.
   if (!Scene3D.isReady()) {
     Scene3D.init(el("scene"), {
-      onContact: selectContact,
+      onContact: (contactId) => {
+        selectContact(contactId);
+        const contact = latestContacts.find((c) => c.id === contactId);
+        if (contact && targetNumber[contact.track_id] && contact.track_id !== selectedTarget) {
+          selectTarget(contact.track_id);
+        }
+      },
       onNode: openEditor,        // same as clicking a node on the map
       onEmpty: () => selectContact(null),
     });
     Scene3D.setNodes(latestNodes, nodeColour);
     Scene3D.setContacts(latestContacts, trailSeconds(), nodeColour);
     Scene3D.setSelected(selected);
+    if (latestPath) Scene3D.setPath(...latestPath);
   }
   Scene3D.show();
 }
@@ -381,43 +388,102 @@ function drawFeed(detections) {
 // Numbers are handed out automatically once a track has proved itself. Targets
 // are permanent: a lost one stays listed and its whole path can still be drawn.
 
+// Only the few most recent are shown; the rest fold away under "Previous".
+const RECENT_TARGETS = 3;
+let showPrevious = false; // is the "Previous" fold open
+let latestTargets = [];   // the last target list, for redrawing when the fold toggles
+
+// Cards are kept and updated in place rather than rebuilt: the list refreshes
+// every poll while a drone is tracked, and replacing the element under the
+// pointer between mouse-down and mouse-up swallows the click.
+const targetCards = new Map(); // track id -> its card element
+
+function targetCard(t) {
+  let card = targetCards.get(t.id);
+  if (!card) {
+    card = document.createElement("div");
+    card.onclick = () => selectTarget(card.dataset.id == selectedTarget ? null : Number(card.dataset.id));
+    targetCards.set(t.id, card);
+  }
+  card.dataset.id = t.id;
+  card.className = `target ${t.status}` + (t.id === selectedTarget ? " selected" : "");
+  const facts = [
+    `${t.contact_count} contacts`,
+    t.speed_mps != null ? `${t.speed_mps.toFixed(0)} m/s` : null,
+    t.alt_m != null ? `${t.alt_m.toFixed(0)} m up` : null,
+  ].filter(Boolean);
+  const html =
+    `<div class="target-top">
+       <b>T-${t.number}</b>
+       <span class="pill ${t.status}">${t.status === "active" ? "tracking" : "lost"}</span>
+       <span class="dots">${t.node_ids.map((id) =>
+         `<i class="dot" title="${id}" style="background:${colourFor(id)}"></i>`).join("")}</span>
+     </div>
+     <div class="node-sub">${facts.join(" · ")} · last seen
+       <span class="seen" data-at="${t.updated_at}">${ago(t.updated_at)}</span></div>`;
+  if (card.dataset.html !== html) { card.innerHTML = html; card.dataset.html = html; }
+  return card;
+}
+
+// Put exactly `children`, in order, into `parent`, touching only what moved.
+function placeChildren(parent, children) {
+  children.forEach((child, i) => {
+    if (parent.children[i] !== child) parent.insertBefore(child, parent.children[i] || null);
+  });
+  while (parent.children.length > children.length) parent.lastElementChild.remove();
+}
+
+const previousToggle = document.createElement("button");
+previousToggle.type = "button";
+previousToggle.onclick = () => {
+  showPrevious = !showPrevious;
+  drawTargetList(latestTargets);
+};
+const previousFold = document.createElement("div");
+previousFold.className = "previous";
+
+// The Server sends targets still being tracked first, then newest first, so
+// the first few are the most recent.
 function drawTargetList(targets) {
   const list = el("targets");
   if (!targets.length) {
+    targetCards.clear();
     list.innerHTML = `<p class="empty">No targets. A drone appears here once two or more
       nodes have tracked it for a moment.</p>`;
     return;
   }
-  list.innerHTML = "";
-  for (const t of targets) {
-    const card = document.createElement("div");
-    card.className = `target ${t.status}` + (t.id === selectedTarget ? " selected" : "");
-    const facts = [
-      `${t.contact_count} contacts`,
-      t.speed_mps != null ? `${t.speed_mps.toFixed(0)} m/s` : null,
-      t.alt_m != null ? `${t.alt_m.toFixed(0)} m up` : null,
-      `last seen ${ago(t.updated_at)}`,
-    ].filter(Boolean);
-    card.innerHTML =
-      `<div class="target-top">
-         <b>T-${t.number}</b>
-         <span class="pill ${t.status}">${t.status === "active" ? "tracking" : "lost"}</span>
-         <span class="dots">${t.node_ids.map((id) =>
-           `<i class="dot" title="${id}" style="background:${colourFor(id)}"></i>`).join("")}</span>
-       </div>
-       <div class="node-sub">${facts.join(" · ")}</div>`;
-    card.onclick = () => selectTarget(t.id === selectedTarget ? null : t.id);
-    list.appendChild(card);
+  for (const id of targetCards.keys()) {
+    if (!targets.some((t) => t.id === id)) targetCards.delete(id);
   }
+
+  const recent = targets.slice(0, RECENT_TARGETS).map(targetCard);
+  const previous = targets.slice(RECENT_TARGETS);
+  if (!previous.length) {
+    placeChildren(list, recent);
+    return;
+  }
+
+  previousToggle.className = "previous-toggle" + (showPrevious ? " open" : "");
+  previousToggle.setAttribute("aria-expanded", String(showPrevious));
+  const label = `<span class="caret">▸</span> Previous <span class="count">${previous.length}</span>`;
+  if (previousToggle.innerHTML !== label) previousToggle.innerHTML = label;
+
+  placeChildren(previousFold, showPrevious ? previous.map(targetCard) : []);
+  placeChildren(list, showPrevious ? [...recent, previousToggle, previousFold] : [...recent, previousToggle]);
 }
 
 let pathFitted = false; // zoom to a target's path once, when it's first selected
+let latestPath = null;  // [target, contacts] for the 3D view, which may open later
 let pathSeq = 0;
 
 function selectTarget(trackId) {
   selectedTarget = trackId;
   pathFitted = false;
+  // Picked from the map or the 3D view: open the fold if it's hiding there.
+  if (latestTargets.findIndex((t) => t.id === trackId) >= RECENT_TARGETS) showPrevious = true;
   pathLayer.clearLayers();
+  latestPath = null;
+  Scene3D.setPath(null);
   delete lastDrawn.targets; // redraw the list so the highlight moves
   delete lastDrawn.path;
   poll();
@@ -430,7 +496,10 @@ async function drawPath(target) {
   const seq = ++pathSeq;
   const contacts = await api(`/api/targets/${target.id}/contacts`);
   if (seq !== pathSeq || selectedTarget !== target.id) return;
-  if (!changed("path", [target.id, contacts.length])) return;
+  if (!changed("path", [target.id, contacts.length, target.status])) return;
+
+  latestPath = [target, contacts];
+  Scene3D.setPath(target, contacts); // ignored until the 3D view is opened
 
   pathLayer.clearLayers();
   const points = contacts.map((c) => [c.lat, c.lon]);
@@ -585,6 +654,7 @@ async function poll() {
       api("/api/targets"), // every target ever, lost ones too: the trail doesn't apply
     ]);
     targetNumber = Object.fromEntries(targets.map((t) => [t.id, t.number]));
+    latestTargets = targets;
     latestNodes = nodes;
     latestContacts = contacts;
     assignColours(nodes);
@@ -600,10 +670,14 @@ async function poll() {
     if (changed("list", [nodes, editing])) drawNodeList(nodes);
     if (changed("feed", detections)) drawFeed(detections);
 
+    // Rebuild the list only when a target actually changes: a rebuild between
+    // mouse-down and mouse-up swallows the click. "Last seen" ticks in place.
     if (changed("targets", [targets.map((t) => [t.id, t.status, t.contact_count, t.node_ids,
-                                                 Math.round(t.age_s)]), selectedTarget])) {
+                                                 t.speed_mps?.toFixed(0), t.alt_m?.toFixed(0)]),
+                            selectedTarget, showPrevious])) {
       drawTargetList(targets);
     }
+    for (const span of el("targets").querySelectorAll(".seen")) span.textContent = ago(span.dataset.at);
     if (selectedTarget !== null) {
       const target = targets.find((t) => t.id === selectedTarget) || { id: selectedTarget };
       await drawPath(target);

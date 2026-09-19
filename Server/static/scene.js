@@ -24,6 +24,7 @@ const Scene3D = (() => {
 
   const COLOUR = {
     selected: 0xffffff,
+    target: 0xff2d78,     // style.css --target: a selected target's flight path
     grid: 0x2a2d33,
     gridEdge: 0x3b4049,
     north: 0x7fbf7f,
@@ -37,6 +38,10 @@ const Scene3D = (() => {
   let nodeMarkers = [];               // resized each frame, see keepMarkersLegible
   let contactClouds = [];             // THREE.Points, one per set of nodes that agreed
   let highlight = null;               // marker drawn on the selected contact
+  let pathGroup = null;               // the selected target's flight path
+  let path = null;                    // { target, contacts } behind pathGroup
+  let pathLabels = [];                // its label; kept apart from `labels`,
+                                      // which setNodes clears
   let labels = [];                    // { element, position }, projected each frame
   const pieTextures = new Map();      // "node-a,node-b" -> the ring texture for it
 
@@ -152,7 +157,10 @@ const Scene3D = (() => {
     });
 
     // The reference point moved, so metres mean something different now.
-    if (moved) setContacts(contacts, currentTrail, colours);
+    if (moved) {
+      setContacts(contacts, currentTrail, colours);
+      drawPath();
+    }
     frameOnce();
   }
 
@@ -414,7 +422,7 @@ const Scene3D = (() => {
   function drawLabels() {
     const width = renderer.domElement.clientWidth;
     const height = renderer.domElement.clientHeight;
-    for (const { element, position } of labels) {
+    for (const { element, position } of [...labels, ...pathLabels]) {
       const projected = position.clone().project(camera);
       const behind = projected.z > 1;
       element.style.display = behind ? "none" : "";
@@ -422,6 +430,64 @@ const Scene3D = (() => {
       element.style.left = `${((projected.x + 1) / 2) * width}px`;
       element.style.top = `${((1 - projected.y) / 2) * height}px`;
     }
+  }
+
+  // -- a target's flight path -------------------------------------------------
+  //
+  // Every contact the Server chained into one target, joined in time order and
+  // drawn at height — with a faint curtain down to the grid, so the climb and
+  // descent read at a glance, which the map's flat line cannot show.
+
+  let framedPathId = null;             // the target the camera last swung to
+
+  function setPath(target, pathContacts) {
+    path = target ? { target, contacts: pathContacts || [] } : null;
+    if (!isReady()) return;  // kept, and drawn when the view is first opened
+    drawPath();
+    if (path && framedPathId !== path.target.id) framePath();
+    framedPathId = path ? path.target.id : null;
+  }
+
+  function drawPath() {
+    pathLabels.forEach((label) => label.element.remove());
+    pathLabels = [];
+    pathGroup = replace(pathGroup, (group) => {
+      if (!path || !origin || !path.contacts.length) return;
+      const points = path.contacts.map((c) => toScene(c.lat, c.lon, c.alt_m));
+
+      if (points.length > 1) group.add(line(points, COLOUR.target, 0.95));
+
+      const curtain = [];
+      points.forEach((p) => curtain.push(p.x, p.y, p.z, p.x, 0, p.z));
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(curtain, 3));
+      group.add(new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({
+        color: COLOUR.target, transparent: true, opacity: 0.18,
+      })));
+
+      // Its shadow on the grid, for reading the ground track against the nodes.
+      group.add(line(points.map((p) => new THREE.Vector3(p.x, 0, p.z)), COLOUR.target, 0.35));
+
+      const dots = new THREE.BufferGeometry().setFromPoints(points);
+      group.add(new THREE.Points(dots, new THREE.PointsMaterial({
+        color: COLOUR.target, size: 5, sizeAttenuation: false,
+      })));
+
+      const latest = points[points.length - 1];
+      const element = document.createElement("span");
+      element.className = `scene-label target-label ${path.target.status || ""}`;
+      element.textContent = `T-${path.target.number}`;
+      labelHost.appendChild(element);
+      pathLabels.push({ element, position: latest.clone() });
+    });
+  }
+
+  // Swing round to a target the first time it's selected, taking in its whole path.
+  function framePath() {
+    if (!path || !origin || !path.contacts.length) return;
+    const points = path.contacts.map((c) => toScene(c.lat, c.lon, c.alt_m));
+    points.push(...points.map((p) => new THREE.Vector3(p.x, 0, p.z)));
+    frameAll(points);
   }
 
   // -- selection --------------------------------------------------------------
@@ -701,6 +767,6 @@ const Scene3D = (() => {
   return {
     init, isReady, show, hide,
     setNodes, setContacts, previewCone,
-    setSelected, focus, reframe,
+    setSelected, focus, reframe, setPath,
   };
 })();

@@ -25,22 +25,40 @@ body {
 
 /* ── header ───────────────────────────────────────────────────────────────── */
 
+/* One line, always. When space runs out the legend's explanations go first
+   (the full text is in each key's tooltip), then the status line truncates;
+   the view switch and the trail selector never move. */
 header {
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 12px 18px;
   border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  min-width: 0;
 }
+header > * { flex: none; }
 
 h1 { font-size: 1.15rem; margin: 0; letter-spacing: 0.02em; }
 h2 { font-size: 0.8rem; margin: 0; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 
-#status { font-size: 0.85rem; color: #7fbf7f; }
+#status {
+  font-size: 0.85rem;
+  color: #7fbf7f;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 #status.bad { color: var(--warn); }
 
-.legend { margin-left: auto; display: flex; gap: 14px; font-size: 0.8rem; color: var(--muted); }
+.legend { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 0.8rem; color: var(--muted); }
 .key { display: flex; align-items: center; gap: 5px; }
+.key[title] { cursor: help; }
+
+/* Narrow windows: drop the legend's words but keep its dots, then the dots too. */
+@media (max-width: 1100px) { .legend .key .word { display: none; } .legend { gap: 8px; } }
+@media (max-width: 820px)  { .legend .key[title] { display: none; } }
 
 .views { display: flex; gap: 4px; }
 
@@ -71,6 +89,13 @@ body[data-view="2d"] #scene, body[data-view="3d"] #map { visibility: hidden; }
   text-shadow: 0 0 4px #0d0f12, 0 0 4px #0d0f12;
 }
 .scene-label.north { transform: translate(-50%, -140%); color: #7fbf7f; }
+.scene-label.target-label {
+  color: var(--target);
+  font-family: ui-monospace, monospace;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+.scene-label.target-label.lost { opacity: 0.7; }
 
 .scene-info {
   position: absolute;
@@ -235,14 +260,14 @@ button.danger { margin-left: auto; background: none; border-color: var(--bad); c
 
 /* ── target list ──────────────────────────────────────────────────────────── */
 
-#targets > .target {
+#targets .target {
   padding: 8px 16px;
   border-left: 3px solid transparent;
   cursor: pointer;
 }
-#targets > .target:hover { background: #20242b; }
-#targets > .target.selected { border-left-color: var(--target); background: #20242b; }
-#targets > .target.lost:not(.selected) { opacity: 0.6; }
+#targets .target:hover { background: #20242b; }
+#targets .target.selected { border-left-color: var(--target); background: #20242b; }
+#targets .target.lost:not(.selected) { opacity: 0.6; }
 
 .target-top { display: flex; align-items: center; gap: 7px; }
 .target-top b { font-family: ui-monospace, monospace; }
@@ -256,6 +281,31 @@ button.danger { margin-left: auto; background: none; border-color: var(--bad); c
 }
 .pill.active { color: #7fbf7f; }
 .pill.lost   { color: var(--muted); }
+
+.previous-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 16px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-align: left;
+}
+.previous-toggle:hover { color: var(--text); background: #20242b; }
+.previous-toggle .caret { display: inline-block; transition: transform 0.15s; }
+.previous-toggle.open .caret { transform: rotate(90deg); }
+.previous-toggle .count {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #2a2d33;
+  font-size: 0.7rem;
+}
+.previous { border-top: 1px solid #202329; }
 
 .dot.target { background: var(--target); border: 2px solid #fff; }
 .marker.path-point { background: var(--target); border: 1px solid #fff; }
