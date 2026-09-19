@@ -69,23 +69,42 @@ aside {
 .dot { width: 9px; height: 9px; flex: none; }
 
 .dot.node,    .marker.node         { background: var(--accent); border: 2px solid #cfe6ff; }
-.dot.contact, .marker.contact      { background: var(--bad);    border: 2px solid #ffd0d0; }
+.dot.contact                       { background: conic-gradient(#e69f00 0 50%, #56b4e9 50% 100%); }
+.marker.contact                    { border: 2px solid #fff; }
 .dot.unconfigured                  { background: var(--warn);   border: 2px solid #ffe4bd; }
 .dot.off                           { opacity: 0.35; }
 .marker.disabled                   { opacity: 0.4; }
 .marker { box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); cursor: pointer; }
+.dot.node { border-color: #fff; }
+
+/* Contacts fade between polls instead of stepping every two seconds. */
+.leaflet-marker-icon { transition: opacity 2s linear; }
+
+select {
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #14171c;
+  color: var(--text);
+  font: inherit;
+}
+.leaflet-popup-content .dot { vertical-align: middle; }
+.hint { display: block; margin-top: 8px; font-size: 0.7rem; color: var(--muted); }
+
 
 .leaflet-popup-content { font-size: 0.85rem; }
 
 /* ── node list ────────────────────────────────────────────────────────────── */
 
-.node {
+/* Scoped to the list: a bare .node would also pad the map markers and legend
+   dots, which carry the same class, into ovals. */
+#node-list > .node {
   padding: 9px 16px;
   border-left: 3px solid transparent;
   cursor: pointer;
 }
-.node:hover { background: #20242b; }
-.node.selected { border-left-color: var(--accent); background: #20242b; }
+#node-list > .node:hover { background: #20242b; }
+#node-list > .node.selected { border-left-color: var(--accent); background: #20242b; }
 
 .node-top { display: flex; align-items: center; gap: 7px; }
 .node-sub { margin-top: 2px; padding-left: 16px; font-size: 0.78rem; color: var(--muted); }
@@ -111,6 +130,8 @@ aside {
   flex-direction: column;
   gap: 12px;
 }
+
+#editor[hidden] { display: none; } /* display:flex above would otherwise beat [hidden] */
 
 #editor-title { color: var(--text); font-family: ui-monospace, monospace; text-transform: none; }
 
@@ -164,5 +185,5 @@ button.danger { margin-left: auto; background: none; border-color: var(--bad); c
   font-size: 0.76rem;
   border-bottom: 1px solid #202329;
 }
-#feed .row .id { width: 78px; flex: none; }
+#feed .row .id { width: 90px; flex: none; display: flex; align-items: center; gap: 5px; }
 #feed .muted { margin-left: auto; color: var(--muted); }

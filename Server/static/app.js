@@ -3,10 +3,21 @@
 // The server owns all the data; this file only shows it and sends edits back.
 // Two things happen here: a map of nodes and contacts, and a form for telling
 // the server where a node is and which way it points.
+//
+// On the map each node has a colour. Its view cone is drawn in that colour, and
+// every contact is ringed in the colours of the nodes whose bearings crossed to
+// make it. Contacts fade out over the "trail" window and then disappear, so the
+// map shows where things are now rather than everywhere they have ever been.
 
 const POLL_MS = 2000;
 const OFFLINE_AFTER_MS = 5 * 60 * 1000; // no packet for 5 min = offline
-const HEADING_LENGTH_M = 250;           // length of the little "looking this way" arrow
+const MAX_SPREAD_KM = 50;               // further than this from every other node = probably a typo
+const CONTACT_LIMIT = 2000;             // most contacts drawn at once
+
+// One colour per node, in node-id order. Okabe–Ito, minus the yellow that
+// vanishes on map tiles, so neighbours stay distinguishable for colour-blind eyes.
+const NODE_COLOURS = ["#e69f00", "#56b4e9", "#009e73", "#d55e00", "#cc79a7", "#0072b2", "#b8a000", "#999999"];
+const UNKNOWN_COLOUR = "#8b929c"; // a contact from before nodes were recorded
 
 const map = L.map("map", { center: [0, 0], zoom: 2 });
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -21,8 +32,10 @@ const el = (id) => document.getElementById(id);
 const editor = el("editor");
 
 let editing = null;      // node_id currently open in the form, or null
+let latestNodes = [];    // the last node list from the server
 let picking = false;     // "pick on map" mode
 let fitted = false;      // only auto-zoom to the data once
+let nodeColour = {};     // node_id -> colour, rebuilt from every poll
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -54,69 +67,145 @@ const ago = (text) => {
 
 // ── map ──────────────────────────────────────────────────────────────────────
 
-const marker = (position, kind, size) =>
+const colourFor = (id) => nodeColour[id] || UNKNOWN_COLOUR;
+
+function assignColours(nodes) {
+  nodeColour = {};
+  nodes.forEach((node, i) => { nodeColour[node.node_id] = NODE_COLOURS[i % NODE_COLOURS.length]; });
+}
+
+const marker = (position, kind, size, style = "") =>
   L.marker(position, {
     icon: L.divIcon({
       className: "",
-      html: `<div class="marker ${kind}" style="width:${size}px;height:${size}px"></div>`,
+      html: `<div class="marker ${kind}" style="width:${size}px;height:${size}px;${style}"></div>`,
       iconSize: [size, size],
       iconAnchor: [size / 2, size / 2],
     }),
   });
 
-// Where the camera is pointing, as a short line drawn from the node.
-function headingLine(node) {
-  const bearing = (node.yaw_deg * Math.PI) / 180;
-  const dLat = (HEADING_LENGTH_M * Math.cos(bearing)) / 111320;
-  const dLon =
-    (HEADING_LENGTH_M * Math.sin(bearing)) /
-    (111320 * Math.cos((node.lat * Math.PI) / 180));
-  return L.polyline(
-    [[node.lat, node.lon], [node.lat + dLat, node.lon + dLon]],
-    { color: "#4ea1ff", weight: 2, opacity: 0.7 }
-  );
-}
+// What each camera can see, as the Server outlines it (geometry.view_footprint):
+// the view pyramid walked out to a fixed range and flattened onto the map. A
+// level camera draws a wedge along its yaw, one aimed straight up draws a patch
+// around the node, tilting in between pulls the cone in, and roll turns it.
+// Dashed means the lens points below the horizon.
+const coneStyle = (node, pitchDeg) => {
+  const colour = node.enabled ? colourFor(node.node_id) : UNKNOWN_COLOUR;
+  return {
+    color: colour,
+    weight: 1.5,
+    opacity: node.enabled ? 0.8 : 0.4,
+    fillColor: colour,
+    fillOpacity: node.enabled ? 0.12 : 0.05,
+    dashArray: pitchDeg < 0 || !node.enabled ? "6 5" : null,
+    interactive: false, // let clicks through, so "pick on map" works inside a cone
+  };
+};
 
-function drawMap(nodes, contacts) {
+const cones = {}; // node_id -> polygon, so the editor can preview edits
+
+function drawNodes(nodes) {
   nodeLayer.clearLayers();
-  contactLayer.clearLayers();
-  const points = [];
+  for (const id in cones) delete cones[id];
 
   for (const node of nodes) {
     if (!node.configured) continue; // nothing to plot until it has a position
-    const position = [node.lat, node.lon];
-    points.push(position);
 
-    marker(position, node.enabled ? "node" : "node disabled", 16)
+    cones[node.node_id] = L.polygon(node.footprint, coneStyle(node, node.pitch_deg)).addTo(nodeLayer);
+
+    marker([node.lat, node.lon], node.enabled ? "node" : "node disabled", 16,
+           `background:${colourFor(node.node_id)}`)
       .bindPopup(
         `<b>${node.name || node.node_id}</b><br>` +
         `${node.lat.toFixed(5)}, ${node.lon.toFixed(5)} · ${node.alt_m.toFixed(0)} m<br>` +
         `yaw ${node.yaw_deg}° · pitch ${node.pitch_deg}° · roll ${node.roll_deg}°<br>` +
+        `view ${node.fov_h_deg}° × ${node.fov_v_deg}°<br>` +
         `<small>click to edit · see the panel for last contact</small>`
       )
       .on("click", () => openEditor(node))
       .addTo(nodeLayer);
-
-    headingLine(node).addTo(nodeLayer);
   }
+
+  if (editing) previewCone(); // a mid-edit redraw keeps the unsaved preview
+}
+
+// Redraw the open node's cone from the form as the operator types, before Save.
+// The outline comes from the Server so the maths lives in one place; the
+// sequence number drops answers that arrive after a newer request.
+let previewSeq = 0;
+async function previewCone() {
+  const cone = cones[editing];
+  if (!cone) return; // unplaced node: nothing on the map yet
+  const names = ["lat", "lon", "yaw_deg", "pitch_deg", "roll_deg", "fov_h_deg", "fov_v_deg"];
+  const values = Object.fromEntries(names.map((name) => [name, parseFloat(field(name).value)]));
+  if (Object.values(values).some(Number.isNaN)) return;
+
+  const seq = ++previewSeq;
+  try {
+    const outline = await api(`/api/footprint?${new URLSearchParams(values)}`);
+    if (seq !== previewSeq || !cones[editing]) return;
+    cones[editing].setLatLngs(outline);
+    cones[editing].setStyle({ dashArray: values.pitch_deg < 0 ? "6 5" : null });
+  } catch {
+    // a half-typed value the Server rejects: keep the last good outline
+  }
+}
+
+// A contact's marker is ringed in the colours of the nodes that saw it: two
+// nodes, two halves; three nodes, three thirds.
+function contactStyle(contact) {
+  const colours = contact.node_ids.length ? contact.node_ids.map(colourFor) : [UNKNOWN_COLOUR];
+  const share = 100 / colours.length;
+  const stops = colours.map((c, i) => `${c} ${i * share}% ${(i + 1) * share}%`);
+  return `background:conic-gradient(${stops.join(",")})`;
+}
+
+const contactMarkers = new Map(); // contact id -> marker, kept across polls
+
+function contactPopup(contact) {
+  const names = contact.node_ids.length
+    ? contact.node_ids.map((id) => `<i class="dot" style="background:${colourFor(id)}"></i> ${id}`).join("<br>")
+    : `${contact.node_count} nodes`;
+  return `<b>contact #${contact.id}</b><br>` +
+    `${contact.lat.toFixed(5)}, ${contact.lon.toFixed(5)}` +
+    (contact.alt_m != null ? ` · ${contact.alt_m.toFixed(0)} m` : "") +
+    `<br>${names}<br><small>${contact.observed_at} UTC</small>`;
+}
+
+// Contacts are updated in place rather than redrawn, so they can fade smoothly
+// (a CSS transition on opacity) and an open popup survives the next poll.
+function drawContacts(contacts) {
+  const trail = trailSeconds();
+  const live = new Set();
 
   for (const contact of contacts) {
-    const position = [contact.lat, contact.lon];
-    points.push(position);
-    marker(position, "contact", 12)
-      .bindPopup(
-        `<b>contact #${contact.id}</b><br>` +
-        `${contact.lat.toFixed(5)}, ${contact.lon.toFixed(5)}<br>` +
-        (contact.alt_m != null ? `${contact.alt_m.toFixed(0)} m · ` : "") +
-        `${contact.node_count} nodes<br><small>${contact.observed_at} UTC</small>`
-      )
-      .addTo(contactLayer);
+    live.add(contact.id);
+    const style = contactStyle(contact);
+    let m = contactMarkers.get(contact.id);
+    if (!m || m.ringStyle !== style) { // new, or the node colours moved
+      if (m) m.remove();
+      m = marker([contact.lat, contact.lon], "contact", 12, style)
+        .bindPopup(contactPopup(contact))
+        .addTo(contactLayer);
+      m.ringStyle = style;
+      contactMarkers.set(contact.id, m);
+    }
+    m.setOpacity(Math.max(0, 1 - contact.age_s / trail));
+    m.setZIndexOffset(-Math.round(contact.age_s)); // newest on top
   }
 
-  if (!fitted && points.length) {
-    map.fitBounds(L.latLngBounds(points).pad(0.3), { maxZoom: 15 });
-    fitted = true;
+  for (const [id, m] of contactMarkers) {
+    if (!live.has(id)) { m.remove(); contactMarkers.delete(id); }
   }
+}
+
+function fitOnce(nodes, contacts) {
+  if (fitted) return;
+  const placed = nodes.filter((n) => n.configured).map((n) => [n.lat, n.lon]);
+  const points = placed.length ? placed : contacts.map((c) => [c.lat, c.lon]);
+  if (!points.length) return;
+  map.fitBounds(L.latLngBounds(points).pad(0.3), { maxZoom: 15 });
+  fitted = true;
 }
 
 map.on("click", (event) => {
@@ -124,6 +213,7 @@ map.on("click", (event) => {
   editor.elements.lat.value = event.latlng.lat.toFixed(6);
   editor.elements.lon.value = event.latlng.lng.toFixed(6);
   setPicking(false);
+  previewCone();
 });
 
 function setPicking(on) {
@@ -149,7 +239,8 @@ function drawNodeList(nodes) {
     card.className = "node" + (node.node_id === editing ? " selected" : "");
     card.innerHTML =
       `<div class="node-top">
-         <i class="dot ${node.configured ? "node" : "unconfigured"} ${isOnline(node) ? "" : "off"}"></i>
+         <i class="dot ${node.configured ? "node" : "unconfigured"} ${isOnline(node) ? "" : "off"}"
+            ${node.configured ? `style="background:${colourFor(node.node_id)}"` : ""}></i>
          <b>${node.name || node.node_id}</b>
          <span class="id">${node.node_id}</span>
        </div>
@@ -169,7 +260,7 @@ function drawFeed(detections) {
     .slice(0, 25)
     .map(
       (d) =>
-        `<div class="row"><span class="id">${d.node_id}</span>` +
+        `<div class="row"><span class="id"><i class="dot" style="background:${colourFor(d.node_id)}"></i> ${d.node_id}</span>` +
         `<span>az ${d.cam_az_deg.toFixed(1)}° el ${d.cam_el_deg.toFixed(1)}°</span>` +
         `<span class="muted">${d.world_az_deg == null
           ? "unplaced"
@@ -184,7 +275,8 @@ function drawFeed(detections) {
 // `action`, …) shadow same-named fields, so editor.name is not the input.
 const field = (name) => editor.elements[name];
 
-const TEXT_FIELDS = ["name", "lat", "lon", "alt_m", "yaw_deg", "pitch_deg", "roll_deg", "notes"];
+const TEXT_FIELDS = ["name", "lat", "lon", "alt_m", "yaw_deg", "pitch_deg", "roll_deg",
+                     "fov_h_deg", "fov_v_deg", "notes"];
 
 function openEditor(node) {
   editing = node.node_id;
@@ -206,6 +298,9 @@ function closeEditor() {
   editing = null;
   editor.hidden = true;
   setPicking(false);
+  // Throw away any unsaved preview: force the next poll to redraw from the server.
+  delete lastDrawn.nodes;
+  poll();
 }
 
 editor.onsubmit = async (event) => {
@@ -219,9 +314,12 @@ editor.onsubmit = async (event) => {
     yaw_deg: number("yaw_deg"),
     pitch_deg: number("pitch_deg"),
     roll_deg: number("roll_deg"),
+    fov_h_deg: parseFloat(field("fov_h_deg").value) || 62.2,
+    fov_v_deg: parseFloat(field("fov_v_deg").value) || 48.8,
     enabled: field("enabled").checked ? 1 : 0,
     notes: field("notes").value,
   };
+  if (!confirmFarAway(body)) return;
   await api(`/api/nodes/${encodeURIComponent(editing)}`, {
     method: "PATCH",
     body: JSON.stringify(body),
@@ -231,7 +329,32 @@ editor.onsubmit = async (event) => {
   poll();
 };
 
+// A slip in the latitude or longitude (37.77 typed as 19.77) throws a node
+// hundreds of kilometres off the map, where it silently vanishes from view. It
+// also wrecks tracking for every node, because the tracker works on a flat map
+// centred on the average node position. So a save that lands far from all the
+// other nodes has to be confirmed.
+function confirmFarAway(body) {
+  const others = latestNodes.filter((n) => n.configured && n.node_id !== editing);
+  if (!others.length) return true; // the first node can go anywhere
+  const nearest = Math.min(...others.map((n) => distanceKm(body.lat, body.lon, n.lat, n.lon)));
+  if (nearest <= MAX_SPREAD_KM) return true;
+  return confirm(
+    `This puts ${editing} ${Math.round(nearest).toLocaleString()} km from the nearest other node.\n\n` +
+    `Latitude ${body.lat}, longitude ${body.lon} — is that right, or a typo?`
+  );
+}
+
+// Great-circle distance; plenty accurate for "is this a typo".
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const rad = Math.PI / 180;
+  const a = Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lon2 - lon1) * rad) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(a));
+}
+
 el("cancel").onclick = closeEditor;
+editor.addEventListener("input", previewCone);
 el("pick").onclick = () => setPicking(!picking);
 
 el("delete").onclick = async () => {
@@ -252,6 +375,17 @@ el("add-node").onclick = async () => {
   }
 };
 
+// ── trail ────────────────────────────────────────────────────────────────────
+
+// How long a contact stays on the map, fading as it goes. Remembered per browser.
+const trailSelect = el("trail");
+try { trailSelect.value = localStorage.getItem("echinus.trail") || trailSelect.value; } catch {}
+const trailSeconds = () => parseFloat(trailSelect.value);
+trailSelect.onchange = () => {
+  try { localStorage.setItem("echinus.trail", trailSelect.value); } catch {}
+  poll();
+};
+
 // ── poll ─────────────────────────────────────────────────────────────────────
 
 // Redraw only when something actually changed, so an open popup or a hovered
@@ -269,16 +403,20 @@ async function poll() {
     const [status, nodes, contacts, detections] = await Promise.all([
       api("/api/status"),
       api("/api/nodes"),
-      api("/api/contacts?limit=200"),
+      api(`/api/contacts?limit=${CONTACT_LIMIT}&max_age_s=${trailSeconds()}`),
       api("/api/detections?limit=25"),
     ]);
+    latestNodes = nodes;
+    assignColours(nodes);
 
-    // The map only cares about placement, so ignore last_seen ticking over.
+    // The cones only care about placement, so ignore last_seen ticking over.
     const placement = nodes.map((n) =>
       [n.node_id, n.name, n.lat, n.lon, n.alt_m, n.yaw_deg, n.pitch_deg, n.roll_deg,
-       n.configured, n.enabled].join());
+       n.fov_h_deg, n.fov_v_deg, n.configured, n.enabled].join());
 
-    if (changed("map", [placement, contacts])) drawMap(nodes, contacts);
+    if (changed("nodes", placement)) drawNodes(nodes);
+    drawContacts(contacts); // every poll: ages move on even when nothing new arrives
+    fitOnce(nodes, contacts);
     if (changed("list", [nodes, editing])) drawNodeList(nodes);
     if (changed("feed", detections)) drawFeed(detections);
 

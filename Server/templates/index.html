@@ -13,9 +13,17 @@
   <h1>Echinus</h1>
   <span id="status">connecting…</span>
   <span class="legend">
-    <span class="key"><i class="dot node"></i>node</span>
+    <span class="key"><i class="dot node"></i>node &amp; what it sees</span>
     <span class="key"><i class="dot unconfigured"></i>needs position</span>
-    <span class="key"><i class="dot contact"></i>contact</span>
+    <span class="key"><i class="dot contact"></i>contact, in the colours of the nodes that saw it</span>
+    <label class="key">trail
+      <select id="trail">
+        <option value="5">5 s</option>
+        <option value="15" selected>15 s</option>
+        <option value="60">1 min</option>
+        <option value="300">5 min</option>
+      </select>
+    </label>
   </span>
 </header>
 
@@ -56,6 +64,15 @@
           <label>Roll&nbsp;° <input name="roll_deg" type="number" step="any" value="0">
             <small>twist about the lens axis</small></label>
         </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Field of view</legend>
+        <div class="grid">
+          <label>Across&nbsp;° <input name="fov_h_deg" type="number" step="any" min="1" max="179" value="62.2"></label>
+          <label>Up–down&nbsp;° <input name="fov_v_deg" type="number" step="any" min="1" max="179" value="48.8"></label>
+        </div>
+        <small class="hint">62.2 × 48.8 is the Pi camera at 640×480 — match the node's node.toml</small>
       </fieldset>
 
       <label class="check"><input name="enabled" type="checkbox" checked> Use this node for tracking</label>

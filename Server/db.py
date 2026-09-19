@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     yaw_deg     REAL NOT NULL DEFAULT 0,    -- compass bearing the lens points
     pitch_deg   REAL NOT NULL DEFAULT 0,    -- degrees above the horizon
     roll_deg    REAL NOT NULL DEFAULT 0,    -- rotation about the lens axis
+    fov_h_deg   REAL NOT NULL DEFAULT 62.2, -- camera field of view, across
+    fov_v_deg   REAL NOT NULL DEFAULT 48.8, -- and up-down
     configured  INTEGER NOT NULL DEFAULT 0, -- operator has set position + orientation
     enabled     INTEGER NOT NULL DEFAULT 1, -- include this node in tracking
     notes       TEXT NOT NULL DEFAULT '',
@@ -63,14 +65,16 @@ CREATE TABLE IF NOT EXISTS contacts (
     lat          REAL NOT NULL,
     lon          REAL NOT NULL,
     alt_m        REAL,
-    node_count   INTEGER NOT NULL
+    node_count   INTEGER NOT NULL,
+    node_ids     TEXT NOT NULL DEFAULT ''  -- comma-separated: who saw it
 );
 CREATE INDEX IF NOT EXISTS idx_contacts_observed_at ON contacts (observed_at);
 """
 
 # Fields the operator may edit from the dashboard. Everything else about a node
 # is either its identity or is derived from traffic.
-EDITABLE = ("name", "lat", "lon", "alt_m", "yaw_deg", "pitch_deg", "roll_deg", "enabled", "notes")
+EDITABLE = ("name", "lat", "lon", "alt_m", "yaw_deg", "pitch_deg", "roll_deg",
+            "fov_h_deg", "fov_v_deg", "enabled", "notes")
 
 
 def connect(path: str | None = None) -> sqlite3.Connection:
@@ -81,7 +85,30 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn)
     return conn
+
+
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an
+# existing table alone, so a database from before them needs them added.
+LATER_COLUMNS = {
+    "nodes": {
+        "fov_h_deg": "REAL NOT NULL DEFAULT 62.2",
+        "fov_v_deg": "REAL NOT NULL DEFAULT 48.8",
+    },
+    "contacts": {
+        "node_ids": "TEXT NOT NULL DEFAULT ''",
+    },
+}
+
+
+def _add_missing_columns(conn) -> None:
+    for table, columns in LATER_COLUMNS.items():
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, definition in columns.items():
+            if name not in present:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+    conn.commit()
 
 
 def _rows(conn, sql: str, params: tuple = ()) -> list[dict]:
@@ -193,13 +220,26 @@ def latest_detection_id(conn) -> int:
 
 # ── contacts ─────────────────────────────────────────────────────────────────
 
-def insert_contact(conn, lat: float, lon: float, alt_m: float | None, node_count: int) -> None:
+def insert_contact(conn, lat: float, lon: float, alt_m: float | None, node_ids) -> None:
+    node_ids = sorted(node_ids)
     conn.execute(
-        "INSERT INTO contacts (lat, lon, alt_m, node_count) VALUES (?, ?, ?, ?)",
-        (lat, lon, alt_m, node_count),
+        "INSERT INTO contacts (lat, lon, alt_m, node_count, node_ids) VALUES (?, ?, ?, ?, ?)",
+        (lat, lon, alt_m, len(node_ids), ",".join(node_ids)),
     )
     conn.commit()
 
 
-def list_contacts(conn, limit: int = 200) -> list[dict]:
-    return _rows(conn, "SELECT * FROM contacts ORDER BY id DESC LIMIT ?", (limit,))
+def list_contacts(conn, limit: int = 200, max_age_s: float | None = None) -> list[dict]:
+    """Newest first. `age_s` is worked out here, on the Server's clock, so the
+    dashboard can fade contacts without trusting the browser's clock.
+    `max_age_s` drops anything older."""
+    rows = _rows(
+        conn,
+        "SELECT *, (julianday('now') - julianday(observed_at)) * 86400.0 AS age_s "
+        "FROM contacts WHERE ? IS NULL OR observed_at >= datetime('now', ?) "
+        "ORDER BY id DESC LIMIT ?",
+        (max_age_s, f"-{max_age_s or 0} seconds", limit),
+    )
+    for row in rows:
+        row["node_ids"] = [n for n in row["node_ids"].split(",") if n]
+    return rows

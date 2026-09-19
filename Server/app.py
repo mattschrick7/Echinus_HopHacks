@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 import db
 import tracker
-from geometry import camera_to_world_azel
+from geometry import DEFAULT_FOV_H_DEG, DEFAULT_FOV_V_DEG, camera_to_world_azel, view_footprint
 
 HERE = Path(__file__).parent
 
@@ -115,9 +115,28 @@ async def hub_socket(ws: WebSocket) -> None:
 
 # ── operator API ─────────────────────────────────────────────────────────────
 
+def with_footprint(node: dict | None) -> dict | None:
+    """Attach the outline of what the node's camera can see, for the map."""
+    if node and node["configured"]:
+        node["footprint"] = view_footprint(
+            node["lat"], node["lon"], node["yaw_deg"], node["pitch_deg"], node["roll_deg"],
+            node["fov_h_deg"], node["fov_v_deg"],
+        )
+    return node
+
+
 @app.get("/api/nodes")
 def api_nodes() -> list[dict]:
-    return db.list_nodes(conn)
+    return [with_footprint(n) for n in db.list_nodes(conn)]
+
+
+@app.get("/api/footprint")
+def api_footprint(
+    lat: float, lon: float, yaw_deg: float, pitch_deg: float, roll_deg: float = 0.0,
+    fov_h_deg: float = DEFAULT_FOV_H_DEG, fov_v_deg: float = DEFAULT_FOV_V_DEG,
+) -> list[tuple[float, float]]:
+    """The same outline for values not saved yet: the editor's live preview."""
+    return view_footprint(lat, lon, yaw_deg, pitch_deg, roll_deg, fov_h_deg, fov_v_deg)
 
 
 @app.post("/api/nodes")
@@ -128,7 +147,7 @@ def api_create_node(body: dict = Body(...)) -> dict:
         raise HTTPException(400, "node_id is required")
     if len(node_id) > 12:
         raise HTTPException(400, "node_id must be 12 characters or fewer")
-    return db.create_node(conn, node_id, body)
+    return with_footprint(db.create_node(conn, node_id, body))
 
 
 @app.patch("/api/nodes/{node_id}")
@@ -136,7 +155,7 @@ def api_update_node(node_id: str, body: dict = Body(...)) -> dict:
     """Set a node's position, orientation, name or notes — the operator's edit."""
     if db.get_node(conn, node_id) is None:
         raise HTTPException(404, f"no node {node_id}")
-    return db.update_node(conn, node_id, body)
+    return with_footprint(db.update_node(conn, node_id, body))
 
 
 @app.delete("/api/nodes/{node_id}")
@@ -151,8 +170,8 @@ def api_detections(limit: int = 200) -> list[dict]:
 
 
 @app.get("/api/contacts")
-def api_contacts(limit: int = 200) -> list[dict]:
-    return db.list_contacts(conn, limit)
+def api_contacts(limit: int = 200, max_age_s: float | None = None) -> list[dict]:
+    return db.list_contacts(conn, limit, max_age_s)
 
 
 @app.get("/api/status")

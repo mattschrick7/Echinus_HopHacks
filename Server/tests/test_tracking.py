@@ -131,3 +131,77 @@ def test_disabled_nodes_are_left_out(conn):
     see(conn, "node-b", b, target)
 
     assert tracker.process(conn, db.detections_after(conn, 0)) == 0
+
+
+def test_contacts_remember_which_nodes_saw_them(conn):
+    target = np.array([100.0, 50.0, 2000.0])
+    a = place_node(conn, "node-a", -500.0, 0.0)
+    b = place_node(conn, "node-b", 500.0, 0.0)
+    see(conn, "node-a", a, target)
+    see(conn, "node-b", b, target)
+    tracker.process(conn, db.detections_after(conn, 0))
+
+    (contact,) = db.list_contacts(conn)
+    assert contact["node_ids"] == ["node-a", "node-b"]
+    assert contact["node_count"] == 2
+    assert 0.0 <= contact["age_s"] < 5.0
+
+
+def test_max_age_hides_old_contacts(conn):
+    db.insert_contact(conn, 1.0, 2.0, 100.0, ["node-a", "node-b"])
+    conn.execute("UPDATE contacts SET observed_at = datetime('now', '-120 seconds')")
+    db.insert_contact(conn, 1.0, 2.0, 100.0, ["node-a", "node-b"])
+
+    assert len(db.list_contacts(conn)) == 2
+    assert len(db.list_contacts(conn, max_age_s=60)) == 1
+
+
+def test_an_old_database_gains_the_new_columns(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(
+        "CREATE TABLE nodes (node_id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '');"
+        "CREATE TABLE contacts (id INTEGER PRIMARY KEY, observed_at TEXT NOT NULL DEFAULT (datetime('now')),"
+        " lat REAL NOT NULL, lon REAL NOT NULL, alt_m REAL, node_count INTEGER NOT NULL);"
+        "INSERT INTO contacts (lat, lon, node_count) VALUES (1, 2, 2);"
+    )
+    old.close()
+
+    upgraded = db.connect(path)
+    (contact,) = db.list_contacts(upgraded)
+    assert contact["node_ids"] == []
+    upgraded.close()
+
+
+def test_two_objects_at_once_give_two_contacts_not_phantoms(conn):
+    """Each node sees both objects. The four rays make four crossings, two of
+    them between rays to *different* objects — those must not become contacts,
+    nor get averaged into the real ones."""
+    first, second = np.array([-150.0, 100.0, 200.0]), np.array([150.0, 60.0, 260.0])
+    a = place_node(conn, "node-a", -500.0, 0.0)
+    b = place_node(conn, "node-b", 500.0, 0.0)
+    for target in (first, second):
+        see(conn, "node-a", a, target)
+        see(conn, "node-b", b, target)
+
+    assert tracker.process(conn, db.detections_after(conn, 0)) == 2
+    for contact in db.list_contacts(conn):
+        position = geodetic_to_enu(contact["lat"], contact["lon"], contact["alt_m"], *BASE)
+        assert min(np.linalg.norm(position - t) for t in (first, second)) < 1.0
+
+
+def test_a_ray_is_never_shared_between_contacts(conn):
+    """Three nodes, two objects: every node's ray ends up in exactly one contact."""
+    first, second = np.array([0.0, 200.0, 250.0]), np.array([100.0, -150.0, 300.0])
+    nodes = {
+        "node-a": place_node(conn, "node-a", -500.0, 0.0),
+        "node-b": place_node(conn, "node-b", 500.0, 0.0),
+        "node-c": place_node(conn, "node-c", 0.0, 500.0),
+    }
+    for node_id, position in nodes.items():
+        for target in (first, second):
+            see(conn, node_id, position, target)
+
+    assert tracker.process(conn, db.detections_after(conn, 0)) == 2
+    assert [c["node_count"] for c in db.list_contacts(conn)] == [3, 3]
