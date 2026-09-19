@@ -25,7 +25,13 @@ import urllib.request
 import numpy as np
 import websockets
 
-from geometry import enu_to_geodetic, world_to_camera_azel
+from geometry import (
+    DEFAULT_FOV_H_DEG,
+    DEFAULT_FOV_V_DEG,
+    DETECTION_RANGE_M,
+    enu_to_geodetic,
+    world_to_camera_azel,
+)
 
 SERVER_URL = os.environ.get("SERVER_URL", "ws://localhost:8000/ws/hub")
 API_URL = SERVER_URL.replace("ws://", "http://").replace("wss://", "https://").rsplit("/ws/", 1)[0]
@@ -36,21 +42,30 @@ BASE_LON = float(os.environ.get("SIM_LON", "-122.4194"))
 SEND_HZ = float(os.environ.get("SIM_HZ", "5"))
 NOISE_DEG = float(os.environ.get("SIM_NOISE_DEG", "0.1"))
 FALSE_POSITIVE_RATE = float(os.environ.get("SIM_FP_RATE", "0.02"))
-LOOP_S = float(os.environ.get("SIM_LOOP_S", "40"))
+LOOP_S = float(os.environ.get("SIM_LOOP_S", "100"))
+PITCH_DEG = float(os.environ.get("SIM_PITCH", "30"))  # camera tilt above the horizon
 RECONNECT_S = 2.0     # wait between attempts when the Server is unreachable
 
 RING_M = 500.0        # nodes sit on a circle this big, for decent geometry
-HALF_FOV_DEG = 31.0   # what the node's camera can see either side of the axis
+# What each camera can see, the same numbers the Server uses to draw its cone.
+# Nodes report pinhole angles, so each axis is checked on its own half-angle.
+FOV_H_DEG, FOV_V_DEG = DEFAULT_FOV_H_DEG, DEFAULT_FOV_V_DEG
 
-# Targets in metres around the ring's centre: starting point and velocity.
+# Drones, in metres around the ring's centre: starting point and velocity. A
+# few hundred metres up at ~30 m/s, crossing the ring in a LOOP_S loop.
 TARGETS = [
-    {"start": np.array([-4000.0, 0.0, 2500.0]), "velocity": np.array([250.0, 30.0, 0.0])},
-    {"start": np.array([0.0, -4000.0, 3000.0]), "velocity": np.array([20.0, 260.0, -5.0])},
+    {"start": np.array([-1500.0, 100.0, 200.0]), "velocity": np.array([30.0, 0.0, 0.0])},
+    {"start": np.array([150.0, -1500.0, 300.0]), "velocity": np.array([-3.0, 28.0, -1.0])},
 ]
 
 
 def build_nodes() -> list[dict]:
-    """Nodes on a ring, all staring straight up."""
+    """Nodes on a ring, each tilted up and aimed at the next node round it.
+
+    The cameras face each other — with two nodes, head-on; with more, in a
+    chain — so neighbouring views overlap over the ring, which is what the
+    tracker needs to cross their bearings.
+    """
     nodes = []
     for i in range(NODE_COUNT):
         angle = 2 * math.pi * i / NODE_COUNT
@@ -58,10 +73,16 @@ def build_nodes() -> list[dict]:
         lat, lon, alt = enu_to_geodetic(offset, BASE_LAT, BASE_LON, 10.0)
         nodes.append({
             "node_id": f"sim-{i}",
+            "name": f"simulated node {i}",
             "enu": offset,
             "lat": lat, "lon": lon, "alt_m": alt,
-            "yaw_deg": 0.0, "pitch_deg": 90.0, "roll_deg": 0.0,
+            "pitch_deg": PITCH_DEG, "roll_deg": 0.0,
+            "fov_h_deg": FOV_H_DEG, "fov_v_deg": FOV_V_DEG,
         })
+
+    for i, node in enumerate(nodes):
+        east, north, _ = nodes[(i + 1) % len(nodes)]["enu"] - node["enu"]
+        node["yaw_deg"] = round(math.degrees(math.atan2(east, north)) % 360.0, 1)
     return nodes
 
 
@@ -77,8 +98,9 @@ def configure_on_server(nodes: list[dict], attempts: int = 30) -> None:
             time.sleep(1)
 
     for node in nodes:
-        body = {k: node[k] for k in ("node_id", "lat", "lon", "alt_m", "yaw_deg", "pitch_deg", "roll_deg")}
-        body["name"] = f"simulated {node['node_id']}"
+        body = {k: node[k] for k in ("node_id", "lat", "lon", "alt_m",
+                                   "yaw_deg", "pitch_deg", "roll_deg", "fov_h_deg", "fov_v_deg")}
+        body["name"] = node["name"]
         request = urllib.request.Request(
             f"{API_URL}/api/nodes",
             data=json.dumps(body).encode(),
@@ -97,6 +119,8 @@ def observations(nodes: list[dict], elapsed: float) -> list[tuple[str, float, fl
         position = target["start"] + target["velocity"] * elapsed
         for node in nodes:
             direction = position - node["enu"]
+            if np.linalg.norm(direction) > DETECTION_RANGE_M:
+                continue  # too far off to pick out, as the dashboard's cone shows
             angles = world_to_camera_azel(
                 direction / np.linalg.norm(direction),
                 node["yaw_deg"], node["pitch_deg"], node["roll_deg"],
@@ -104,7 +128,7 @@ def observations(nodes: list[dict], elapsed: float) -> list[tuple[str, float, fl
             if angles is None:
                 continue
             az, el = angles
-            if abs(az) > HALF_FOV_DEG or abs(el) > HALF_FOV_DEG:
+            if abs(az) > node["fov_h_deg"] / 2 or abs(el) > node["fov_v_deg"] / 2:
                 continue  # outside the camera's view
             seen.append((node["node_id"], az + random.gauss(0, NOISE_DEG), el + random.gauss(0, NOISE_DEG)))
 
@@ -112,8 +136,8 @@ def observations(nodes: list[dict], elapsed: float) -> list[tuple[str, float, fl
         if random.random() < FALSE_POSITIVE_RATE:
             seen.append((
                 node["node_id"],
-                random.uniform(-HALF_FOV_DEG, HALF_FOV_DEG),
-                random.uniform(-HALF_FOV_DEG, HALF_FOV_DEG),
+                random.uniform(-node["fov_h_deg"] / 2, node["fov_h_deg"] / 2),
+                random.uniform(-node["fov_v_deg"] / 2, node["fov_v_deg"] / 2),
             ))
     return seen
 

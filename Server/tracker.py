@@ -10,11 +10,16 @@ Per cycle:
      bearing, i.e. from a configured node).
   2. Bucket them by time, so we only compare things seen at the same moment.
   3. In each bucket, try every pair of rays from *different* nodes and keep the
-     pairs that actually come close to meeting, in front of both cameras, at a
-     believable height. Pairs that fail are thrown away — a lone node seeing
-     something is not evidence of an object's position.
-  4. Merge nearby crossings so an object seen by three nodes is one contact
-     with node_count = 3, not three separate contacts.
+     pairs that genuinely meet — within a small angle of each other, in front
+     of both cameras, at a believable height. A lone node seeing something is
+     not evidence of an object's position.
+  4. Hand the rays out to objects, closest-meeting pairs first, and never give
+     one ray to two objects. A ray is one node seeing one thing; when two
+     objects are in the air together, a ray to the first can pass near a ray to
+     the second, and without this rule that near miss becomes a phantom contact
+     (or gets averaged into a real one and drags it off). Any other node whose
+     ray also passes through the object joins it, so three nodes seeing one
+     thing make one contact with node_count = 3.
 
 The newest bucket is held back one cycle so a straggling detection has a chance
 to join it before the bucket is closed.
@@ -27,13 +32,25 @@ from collections import defaultdict
 import numpy as np
 
 import db
-from geometry import azel_to_unit, closest_approach, enu_to_geodetic, geodetic_to_enu, mean_position
+from geometry import (
+    azel_to_unit,
+    closest_approach,
+    distance_to_ray,
+    enu_to_geodetic,
+    geodetic_to_enu,
+    mean_position,
+    nearest_point_to_rays,
+)
 
 # Tuning knobs. These are the numbers to reach for when tracking looks wrong.
 POLL_S = 1.0                 # how often to look for new detections
 BUCKET_MS = 200              # detections this close in time are "simultaneous"
-MAX_GAP_M = 150.0            # two rays count as meeting if they pass this close
-MERGE_M = 300.0              # crossings this close describe the same object
+# Two rays count as meeting if they pass within this angle of each other, as
+# seen from the cameras: detector noise plus a little slack for an orientation
+# typed in by hand. An angle rather than a fixed distance, because a small
+# aiming error opens into a big gap far away and only a tiny one close in.
+MEETING_ANGLE_DEG = 1.5
+MIN_GAP_M = 5.0              # floor, so very close objects aren't held to millimetres
 MIN_NODES = 2                # nodes that must agree before a contact is written
 MIN_ALT_M, MAX_ALT_M = 0.0, 30_000.0
 MAX_RANGE_M = 50_000.0
@@ -43,36 +60,66 @@ def _believable(point: np.ndarray) -> bool:
     return MIN_ALT_M <= point[2] <= MAX_ALT_M and np.hypot(point[0], point[1]) <= MAX_RANGE_M
 
 
-def crossings(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[np.ndarray, frozenset]]:
-    """Every cross-node ray pair that genuinely meets somewhere plausible."""
+def _tolerance(range_m: float) -> float:
+    """How far apart two rays may pass, at this range, and still meet."""
+    return max(MIN_GAP_M, range_m * np.tan(np.radians(MEETING_ANGLE_DEG)))
+
+
+def crossings(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[float, int, int, np.ndarray]]:
+    """Every cross-node ray pair that genuinely meets somewhere plausible.
+
+    Returns (gap, ray index, ray index, meeting point), best meetings first.
+    """
     found = []
     for i, (node_a, origin_a, direction_a) in enumerate(rays):
-        for node_b, origin_b, direction_b in rays[i + 1:]:
+        for j in range(i + 1, len(rays)):
+            node_b, origin_b, direction_b = rays[j]
             if node_a == node_b:
                 continue  # a node can't triangulate against itself
             result = closest_approach(origin_a, direction_a, origin_b, direction_b)
             if result is None:
                 continue
             midpoint, gap, t_a, t_b = result
-            if gap > MAX_GAP_M or t_a < 0 or t_b < 0 or not _believable(midpoint):
+            if t_a <= 0 or t_b <= 0 or not _believable(midpoint):
                 continue
-            found.append((midpoint, frozenset((node_a, node_b))))
-    return found
+            if gap > _tolerance(min(t_a, t_b)):
+                continue
+            found.append((gap, i, j, midpoint))
+    return sorted(found, key=lambda f: f[0])
 
 
-def merge(found: list[tuple[np.ndarray, frozenset]]) -> list[tuple[np.ndarray, set]]:
-    """Group crossings that are within MERGE_M of each other into one object."""
-    groups: list[dict] = []
-    for point, nodes in found:
-        for group in groups:
-            if np.linalg.norm(point - group["centre"]) <= MERGE_M:
-                group["points"].append(point)
-                group["nodes"] |= nodes
-                group["centre"] = np.mean(group["points"], axis=0)
-                break
-        else:
-            groups.append({"points": [point], "nodes": set(nodes), "centre": point})
-    return [(g["centre"], g["nodes"]) for g in groups]
+def associate(rays: list[tuple[str, np.ndarray, np.ndarray]]) -> list[tuple[np.ndarray, set]]:
+    """Group rays into objects, each ray used at most once.
+
+    Seed an object from the best unclaimed pair, then let every other node
+    whose unclaimed ray passes through it join, refitting the position as each
+    one does. Returns (position, node ids) per object.
+    """
+    used: set[int] = set()
+    objects = []
+    for _gap, i, j, midpoint in crossings(rays):
+        if i in used or j in used:
+            continue  # one of these rays already belongs to another object
+        members = [i, j]
+        point = midpoint
+
+        # Other nodes' rays that also pass through this object, nearest first.
+        candidates = []
+        for k, (node_k, origin_k, direction_k) in enumerate(rays):
+            if k in used or k in members:
+                continue
+            miss, along = distance_to_ray(point, origin_k, direction_k)
+            if along > 0 and miss <= _tolerance(along):
+                candidates.append((miss, k))
+        for _miss, k in sorted(candidates):
+            if rays[k][0] in {rays[m][0] for m in members}:
+                continue  # one ray per node per object
+            members.append(k)
+            point = nearest_point_to_rays([rays[m][1] for m in members], [rays[m][2] for m in members])
+
+        used.update(members)
+        objects.append((point, {rays[m][0] for m in members}))
+    return objects
 
 
 def _node_positions(conn) -> tuple[dict[str, np.ndarray], tuple[float, float, float]] | None:
@@ -105,11 +152,11 @@ def process(conn, detections: list[dict]) -> int:
             for d in group
             if d["node_id"] in node_enu
         ]
-        for centre, nodes in merge(crossings(rays)):
+        for centre, nodes in associate(rays):
             if len(nodes) < MIN_NODES:
                 continue
             lat, lon, alt = enu_to_geodetic(centre, *origin)
-            db.insert_contact(conn, lat, lon, alt, len(nodes))
+            db.insert_contact(conn, lat, lon, alt, nodes)
             written += 1
     return written
 

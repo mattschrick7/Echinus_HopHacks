@@ -107,3 +107,42 @@ def test_rays_pointing_away_give_negative_distance():
 def test_parallel_rays_have_no_crossing():
     direction = azel_to_unit(45, 30)
     assert closest_approach(np.zeros(3), direction, np.array([100.0, 0.0, 0.0]), direction) is None
+
+
+# ── field-of-view footprint ──────────────────────────────────────────────────
+
+from geometry import geodetic_to_enu as _to_enu, view_footprint  # noqa: E402
+
+_BASE = (37.7749, -122.4194)
+
+
+def _outline(**aim):
+    """The footprint as ENU (east, north) metres around the node, drawn to 600 m."""
+    outline = view_footprint(*_BASE, range_m=600.0, **aim)
+    return np.array([_to_enu(lat, lon, 0.0, *_BASE, 0.0)[:2] for lat, lon in outline])
+
+
+def test_level_camera_draws_a_wedge_opening_along_its_yaw():
+    outline = _outline(yaw_deg=90.0, pitch_deg=0.0)
+    assert np.allclose(outline.min(axis=0)[0], 0.0, atol=1e-6)  # starts at the node...
+    assert outline[:, 0].max() > 500.0                          # ...and runs east
+    half_width = outline[:, 1].max()
+    assert 300.0 < half_width < 330.0  # 600 m * sin(31.1 deg), give or take the corners
+
+
+def test_camera_pointing_up_draws_a_patch_around_the_node():
+    outline = _outline(yaw_deg=0.0, pitch_deg=90.0)
+    assert outline[:, 0].min() < -100 and outline[:, 0].max() > 100
+    assert outline[:, 1].min() < -100 and outline[:, 1].max() > 100
+
+
+def test_tilting_up_shortens_the_cone():
+    reach = lambda pitch: _outline(yaw_deg=0.0, pitch_deg=pitch)[:, 1].max()
+    # Past half the vertical field, the near edge climbs and the cone pulls in.
+    assert reach(40.0) > reach(65.0) > reach(85.0)
+
+
+def test_roll_turns_the_footprint():
+    level = _outline(yaw_deg=0.0, pitch_deg=90.0, roll_deg=0.0)
+    rolled = _outline(yaw_deg=0.0, pitch_deg=90.0, roll_deg=30.0)
+    assert not np.allclose(level.max(axis=0), rolled.max(axis=0), atol=1.0)

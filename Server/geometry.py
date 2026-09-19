@@ -147,6 +147,88 @@ def world_to_camera_azel(
     )
 
 
+# ── field of view ────────────────────────────────────────────────────────────
+
+# The IMX219 at 640x480: 62.2 degrees across, and square pixels make the
+# vertical field 2*atan(tan(31.1) * 480/640) = 48.8 degrees.
+DEFAULT_FOV_H_DEG = 62.2
+DEFAULT_FOV_V_DEG = 48.8
+
+# How far away a node can pick out a drone. A lens alone would see forever;
+# what runs out is pixels on the target. This is the one number that sets both
+# how far the dashboard draws each view cone and how far the simulator's
+# cameras detect — keep them the same, or contacts land outside the cones.
+DETECTION_RANGE_M = 1500.0
+
+
+def view_footprint(
+    lat: float,
+    lon: float,
+    yaw_deg: float,
+    pitch_deg: float,
+    roll_deg: float = 0.0,
+    fov_h_deg: float = DEFAULT_FOV_H_DEG,
+    fov_v_deg: float = DEFAULT_FOV_V_DEG,
+    range_m: float = DETECTION_RANGE_M,
+    samples_per_edge: int = 8,
+) -> list[tuple[float, float]]:
+    """A camera's field of view as seen from above, for drawing on the map.
+
+    The view is a rectangular pyramid: every direction with |tan(az)| and
+    |tan(el)| inside the half-angles, in the same pinhole terms the detector
+    uses. Walk the pyramid's edge, go `range_m` along each direction, and drop
+    the point onto the ground. What comes back is the outline of those points
+    plus the node itself, as (lat, lon) pairs forming a convex polygon.
+
+    That polygon is exactly the ground position of everything the camera can
+    see within `range_m`, at any height — so a contact the node took part in
+    always sits inside it, as long as range_m is the real detection range.
+
+    That one construction covers every aim: a level camera draws a wedge
+    opening out along its yaw, one pointed straight up draws a patch centred on
+    the node, and anything between draws a cone that shortens as it tilts.
+    Roll turns the rectangle, so it now changes the picture too.
+    """
+    forward, right, up = camera_axes(yaw_deg, pitch_deg, roll_deg)
+    half_x = math.tan(math.radians(fov_h_deg) / 2.0)
+    half_y = math.tan(math.radians(fov_v_deg) / 2.0)
+
+    corners = [(-half_x, -half_y), (half_x, -half_y), (half_x, half_y), (-half_x, half_y)]
+    points = [(0.0, 0.0)]  # the apex: the node itself
+    for (x0, y0), (x1, y1) in zip(corners, corners[1:] + corners[:1]):
+        for step in range(samples_per_edge):
+            f = step / samples_per_edge
+            direction = forward + right * (x0 + (x1 - x0) * f) + up * (y0 + (y1 - y0) * f)
+            east, north, _ = range_m * direction / np.linalg.norm(direction)
+            points.append((float(east), float(north)))
+
+    return [
+        enu_to_geodetic(np.array([east, north, 0.0]), lat, lon, 0.0)[:2]
+        for east, north in _convex_hull(points)
+    ]
+
+
+def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Andrew's monotone chain. Counter-clockwise, no repeated first point."""
+    points = sorted(set(points))
+    if len(points) < 3:
+        return points
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for p in points:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(points):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
 # ── ray intersection ─────────────────────────────────────────────────────────
 
 def closest_approach(p1, d1, p2, d2):
@@ -168,3 +250,29 @@ def closest_approach(p1, d1, p2, d2):
     t2 = (a * e - b * d) / denominator
     point1, point2 = p1 + t1 * d1, p2 + t2 * d2
     return (point1 + point2) / 2.0, float(np.linalg.norm(point1 - point2)), t1, t2
+
+
+def nearest_point_to_rays(origins, directions) -> np.ndarray:
+    """The point with the least total squared distance to a set of lines.
+
+    Each line is an origin and a unit direction. This is how two or more
+    bearings on one object become one position: with two lines it is the
+    midpoint of their closest approach, and every extra line refines it.
+    """
+    a = np.zeros((3, 3))
+    b = np.zeros(3)
+    for origin, direction in zip(origins, directions):
+        away = np.eye(3) - np.outer(direction, direction)  # removes the along-ray part
+        a += away
+        b += away @ origin
+    return np.linalg.solve(a, b)
+
+
+def distance_to_ray(point, origin, direction) -> tuple[float, float]:
+    """(how far `point` is from the ray, how far along the ray it sits).
+
+    Distance along is negative when the point is behind the ray's origin.
+    """
+    along = float((point - origin) @ direction)
+    return float(np.linalg.norm(point - (origin + along * direction))), along
+
