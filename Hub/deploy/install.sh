@@ -21,6 +21,20 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
+# ── apt packages ─────────────────────────────────────────────────────────────
+# sx126x.py imports RPi.GPIO and pyserial at module scope. RPi.GPIO is apt-only
+# on Pi OS, so both come from apt and the venv below shares system packages.
+APT_PACKAGES="python3-rpi.gpio python3-serial"
+MISSING=""
+for pkg in $APT_PACKAGES; do
+    dpkg -s "$pkg" &>/dev/null || MISSING="$MISSING $pkg"
+done
+if [ -n "$MISSING" ]; then
+    echo "installing apt packages:$MISSING"
+    sudo apt-get update
+    sudo apt-get install -y $MISSING
+fi
+
 # ── uv ───────────────────────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
     echo "installing uv..."
@@ -30,7 +44,12 @@ fi
 
 cd "$REPO_DIR"
 echo "syncing dependencies..."
-uv sync --package echinus-hub
+# --system-site-packages so the apt-installed RPi.GPIO is importable.
+# --python pins the venv to the interpreter those apt packages were built for;
+# uv otherwise downloads its own CPython, and the shared dist-packages tree then
+# belongs to a different version and the imports fail anyway.
+uv venv --system-site-packages --python /usr/bin/python3
+uv sync --package echinus-hub --active
 
 # ── Waveshare LoRa driver ────────────────────────────────────────────────────
 # sx126x.py isn't on PyPI; it comes out of Waveshare's demo zip. Without it the

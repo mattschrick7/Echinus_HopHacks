@@ -21,6 +21,21 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
+# ── apt packages ─────────────────────────────────────────────────────────────
+# These can't come from PyPI on Pi OS: picamera2 and RPi.GPIO are apt-only, and
+# sx126x.py needs pyserial visible to the same interpreter. That's what the
+# --system-site-packages venv below is for.
+APT_PACKAGES="python3-picamera2 python3-rpi.gpio python3-serial"
+MISSING=""
+for pkg in $APT_PACKAGES; do
+    dpkg -s "$pkg" &>/dev/null || MISSING="$MISSING $pkg"
+done
+if [ -n "$MISSING" ]; then
+    echo "installing apt packages:$MISSING"
+    sudo apt-get update
+    sudo apt-get install -y $MISSING
+fi
+
 # ── uv ───────────────────────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
     echo "installing uv..."
@@ -30,10 +45,11 @@ fi
 
 cd "$REPO_DIR"
 echo "syncing dependencies (slow on first run)..."
-# --system-site-packages so the apt-installed picamera2 is importable; it can't
-# be installed from PyPI. Install it first if it's missing:
-#   sudo apt install -y python3-picamera2
-uv venv --system-site-packages
+# --system-site-packages so the apt-installed picamera2 and RPi.GPIO are importable.
+# --python pins the venv to the interpreter those apt packages were built for;
+# uv otherwise downloads its own CPython, and the shared dist-packages tree then
+# belongs to a different version and the imports fail anyway.
+uv venv --system-site-packages --python /usr/bin/python3
 uv sync --package echinus-node --active
 
 # ── Waveshare LoRa driver ────────────────────────────────────────────────────
