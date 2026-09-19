@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -57,9 +59,20 @@ app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
 # ── dashboard ────────────────────────────────────────────────────────────────
 
+# A fingerprint of every static file, stamped onto the page's asset links. A
+# browser that cached last build's app.js or style.css otherwise runs it against
+# this build's HTML: the layout falls apart and the map never starts.
+STATIC_VERSION = hashlib.sha1(
+    b"".join(p.read_bytes() for p in sorted((HERE / "static").rglob("*")) if p.is_file())
+).hexdigest()[:10]
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard() -> str:
-    return (HERE / "templates" / "index.html").read_text(encoding="utf-8")
+def dashboard() -> HTMLResponse:
+    page = (HERE / "templates" / "index.html").read_text(encoding="utf-8")
+    page = re.sub(r'((?:src|href)="/static/[^"?]+)"', rf'\1?v={STATIC_VERSION}"', page)
+    # The page itself must never be cached, or it would pin the old fingerprint.
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
 
 
 # ── hub ingest ───────────────────────────────────────────────────────────────

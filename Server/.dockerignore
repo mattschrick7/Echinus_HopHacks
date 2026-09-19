@@ -5,3 +5,4 @@ tests/
 *.db
 *.db-wal
 *.db-shm
+.venv/
