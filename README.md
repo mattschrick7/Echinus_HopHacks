@@ -74,6 +74,46 @@ docker compose up --build
 Dashboard on <http://localhost:8000>. Hubs connect to
 `ws://<this-machine>:8000/ws/hub`.
 
+### Running without Docker
+
+Install the Server dependencies once:
+
+```bash
+cd Server
+python -m pip install -r requirements.txt
+```
+
+Copy `Server/.env.example` to `Server/.env` and fill in the Twilio values. The
+Server loads that file automatically, so you do not need to export settings in
+every terminal. Then start it normally:
+
+```bash
+ECHINUS_DB=./echinus.db uvicorn app:app --host 0.0.0.0 --reload --port 8000
+```
+
+The real `Server/.env` is ignored by Git. Keep it on the machine where the
+Server runs and never commit the Twilio auth token.
+
+### Optional SMS alerts
+
+The Server can send one SMS when a target is confirmed after three matching
+contacts. It is disabled by default. To enable Twilio alerts, export these
+variables before starting the Server:
+
+```bash
+export ECHINUS_SMS_ENABLED=1
+export TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export TWILIO_AUTH_TOKEN=your_auth_token
+export TWILIO_FROM_NUMBER=+15551234567
+export TWILIO_TO_NUMBER=+15557654321
+```
+
+The message includes the target number, behavior classification and confidence,
+position, altitude, velocity, contributing nodes, and observation count. The
+Server queues each confirmed target once, so dashboard polling cannot duplicate
+messages. Keep the credentials in your shell environment or secret manager;
+never commit them to the repository.
+
 No hardware yet? Run the simulator instead — it invents a few nodes, places
 them via the same API the dashboard uses, and flies targets past them:
 

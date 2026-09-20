@@ -19,6 +19,7 @@ venv/
 # Per-machine config — copy the .example files and edit
 Node/node.toml
 Hub/hub.toml
+Server/.env
 
 # Waveshare's LoRa driver, fetched by the install scripts (not ours to vendor)
 sx126x.py
