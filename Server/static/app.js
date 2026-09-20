@@ -20,6 +20,9 @@ const MAX_SPREAD_KM = 50;               // further than this from every other no
 const CLOCK_WARN_MS = 1000;             // node clock this far from the hub's = detections won't pair
 const VIEW_WARN_MS = 10 * 60 * 1000;    // how long an out-of-view report stays flagged
 const CONTACT_LIMIT = 2000;             // most contacts drawn at once
+const HORIZON_S = 10;                   // a heading arrow reaches this far ahead
+const MIN_SPEED_MPS = 0.5;              // slower than this is hovering: no heading
+const METRES_PER_DEGREE = 111320;       // geometry.METRES_PER_DEGREE
 
 // One colour per node, in node-id order. Okabe–Ito, minus the yellow that
 // vanishes on map tiles, so neighbours stay distinguishable for colour-blind eyes.
@@ -35,6 +38,7 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const nodeLayer = L.layerGroup().addTo(map);
 const contactLayer = L.layerGroup().addTo(map);
 const pathLayer = L.layerGroup().addTo(map); // the selected target's flight path
+const headingLayer = L.layerGroup().addTo(map); // where each target is heading
 
 const el = (id) => document.getElementById(id);
 const editor = el("editor");
@@ -262,7 +266,8 @@ function setView(which) {
     Scene3D.setContacts(latestContacts, trailSeconds(), nodeColour);
     Scene3D.setSelected(selected);
     if (latestPath) Scene3D.setPath(...latestPath);
-  }
+    Scene3D.setTargets(latestTargets); // after setPath: a lost target's arrow
+  }                                    // depends on whether it is the selected one
   Scene3D.show();
 }
 
@@ -474,6 +479,56 @@ function drawTargetList(targets) {
   placeChildren(list, showPrevious ? [...recent, previousToggle, previousFold] : [...recent, previousToggle]);
 }
 
+// A target has a smoothed velocity as well as a position (targets.py), so the
+// map can show where it is going: a line from the last fix to where it will be
+// in HORIZON_S if it holds its course — the same dead reckoning the tracker
+// predicts with. Only the horizontal part shows here; the 3D view has the climb.
+//
+// Tracked targets always get one. A lost target's velocity stopped when it did,
+// so it gets a faded arrow only while it is selected, to show its last heading.
+
+// Flat earth, as geometry.py triangulates in: over HORIZON_S at drone speeds
+// the error against a proper geodesic is centimetres.
+function aheadOf(target) {
+  const north = target.vel_n * HORIZON_S;
+  const east = target.vel_e * HORIZON_S;
+  return [
+    target.lat + north / METRES_PER_DEGREE,
+    target.lon + east / (METRES_PER_DEGREE * Math.cos((target.lat * Math.PI) / 180)),
+  ];
+}
+
+function drawTargetHeadings(targets) {
+  headingLayer.clearLayers();
+  const colour = getComputedStyle(document.documentElement).getPropertyValue("--target");
+
+  for (const t of targets) {
+    if (t.status !== "active" && t.id !== selectedTarget) continue;
+    if (t.vel_e == null || t.vel_n == null) continue;
+    const speed = Math.hypot(t.vel_e, t.vel_n, t.vel_u ?? 0);
+    if (speed < MIN_SPEED_MPS) continue;
+
+    const live = t.status === "active";
+    const tip = aheadOf(t);
+    L.polyline([[t.lat, t.lon], tip], {
+      color: colour, weight: 2, opacity: live ? 0.9 : 0.35, interactive: false,
+    }).addTo(headingLayer);
+
+    // Compass bearing of the ground track, which is also how far to spin a
+    // triangle that starts out pointing north.
+    const bearing = (Math.atan2(t.vel_e, t.vel_n) * 180) / Math.PI;
+    L.marker(tip, {
+      interactive: false,
+      icon: L.divIcon({
+        className: "",
+        html: `<div class="heading-arrow${live ? "" : " dim"}" style="transform:rotate(${bearing}deg)"></div>`,
+        iconSize: [12, 12],
+        iconAnchor: [6, 6],
+      }),
+    }).addTo(headingLayer);
+  }
+}
+
 let pathFitted = false; // zoom to a target's path once, when it's first selected
 let latestPath = null;  // [target, contacts] for the 3D view, which may open later
 let pathSeq = 0;
@@ -678,6 +733,15 @@ async function poll() {
                                                  t.speed_mps?.toFixed(0), t.alt_m?.toFixed(0)]),
                             selectedTarget, showPrevious])) {
       drawTargetList(targets);
+    }
+
+    // Arrows move with the target rather than with its card, so they get their
+    // own check: position and velocity, plus which target is selected.
+    if (changed("headings", [targets.map((t) => [t.id, t.status, t.lat, t.lon, t.alt_m,
+                                                  t.vel_e, t.vel_n, t.vel_u]),
+                             selectedTarget])) {
+      drawTargetHeadings(targets);
+      Scene3D.setTargets(targets); // ignored until the 3D view is opened
     }
     for (const span of el("targets").querySelectorAll(".seen")) span.textContent = ago(span.dataset.at);
     if (selectedTarget !== null) {

@@ -37,8 +37,10 @@ SERVER_URL = os.environ.get("SERVER_URL", "ws://localhost:8000/ws/hub")
 API_URL = SERVER_URL.replace("ws://", "http://").replace("wss://", "https://").rsplit("/ws/", 1)[0]
 
 NODE_COUNT = int(os.environ.get("SIM_NODES", "3"))
-BASE_LAT = float(os.environ.get("SIM_LAT", "37.7749"))
-BASE_LON = float(os.environ.get("SIM_LON", "-122.4194"))
+# Johns Hopkins Homewood campus, Baltimore — the ring's centre sits on the
+# upper quad, so the nodes land around the edge of campus.
+BASE_LAT = float(os.environ.get("SIM_LAT", "39.3299"))
+BASE_LON = float(os.environ.get("SIM_LON", "-76.6205"))
 SEND_HZ = float(os.environ.get("SIM_HZ", "5"))
 NOISE_DEG = float(os.environ.get("SIM_NOISE_DEG", "0.1"))
 FALSE_POSITIVE_RATE = float(os.environ.get("SIM_FP_RATE", "0.02"))

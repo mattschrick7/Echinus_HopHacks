@@ -42,11 +42,14 @@ const Scene3D = (() => {
   let path = null;                    // { target, contacts } behind pathGroup
   let pathLabels = [];                // its label; kept apart from `labels`,
                                       // which setNodes clears
+  let targetGroup = null;             // the heading arrows
+  let targetLabels = [];              // and their speeds, kept apart the same way
   let labels = [];                    // { element, position }, projected each frame
   const pieTextures = new Map();      // "node-a,node-b" -> the ring texture for it
 
   let nodes = [];
   let contacts = [];
+  let targets = [];
   let colours = {};                   // node_id -> "#rrggbb", from app.js
   let origin = null;                  // the ENU reference: the nodes' mean position
   let selected = null;
@@ -75,12 +78,20 @@ const Scene3D = (() => {
     return new THREE.Vector3(east, (alt || 0) - origin.alt, -north);
   }
 
+  // Somewhere to centre the scene when no node has a position yet. A target's
+  // path is included, not just the live contacts: selecting a target that was
+  // lost minutes ago is the one case where there is something worth drawing and
+  // the trail window is empty.
+  const anchors = () => [
+    ...contacts.map((c) => [c.lat, c.lon, c.alt_m || 0]),
+    ...(path ? path.contacts.map((c) => [c.lat, c.lon, c.alt_m || 0]) : []),
+    ...targets.map((t) => [t.lat, t.lon, t.alt_m || 0]),
+  ];
+
   // Everything is drawn around the nodes, so they set the reference point. A
-  // deployment with nothing placed yet falls back to the contacts themselves.
-  function originFor(placed, fallback) {
-    const points = placed.length
-      ? placed.map((n) => [n.lat, n.lon, n.alt_m])
-      : fallback.map((c) => [c.lat, c.lon, c.alt_m || 0]);
+  // deployment with nothing placed yet falls back to what it has been given.
+  function originFor(placed) {
+    const points = placed.length ? placed.map((n) => [n.lat, n.lon, n.alt_m]) : anchors();
     if (!points.length) return null;
     const mean = (i) => points.reduce((total, p) => total + p[i], 0) / points.length;
     return { lat: mean(0), lon: mean(1), alt: mean(2) };
@@ -141,7 +152,7 @@ const Scene3D = (() => {
     colours = nodeColours || {};
 
     const placed = nodes.filter((n) => n.configured);
-    const wanted = originFor(placed, contacts);
+    const wanted = originFor(placed);
     const moved = !sameOrigin(origin, wanted);
     origin = wanted || origin;
 
@@ -160,6 +171,7 @@ const Scene3D = (() => {
     if (moved) {
       setContacts(contacts, currentTrail, colours);
       drawPath();
+      drawTargets();
     }
     frameOnce();
   }
@@ -407,7 +419,7 @@ const Scene3D = (() => {
     contacts = list;
     currentTrail = trailSeconds || currentTrail;
     if (nodeColours) colours = nodeColours;
-    if (!origin) origin = originFor(nodes.filter((n) => n.configured), contacts);
+    if (!origin) origin = originFor(nodes.filter((n) => n.configured));
 
     contactClouds = [];
     contactGroup = replace(contactGroup, (group) => {
@@ -553,7 +565,7 @@ const Scene3D = (() => {
   function drawLabels() {
     const width = renderer.domElement.clientWidth;
     const height = renderer.domElement.clientHeight;
-    for (const { element, position } of [...labels, ...pathLabels]) {
+    for (const { element, position } of [...labels, ...pathLabels, ...targetLabels]) {
       const projected = position.clone().project(camera);
       const behind = projected.z > 1;
       element.style.display = behind ? "none" : "";
@@ -575,6 +587,7 @@ const Scene3D = (() => {
     path = target ? { target, contacts: pathContacts || [] } : null;
     if (!isReady()) return;  // kept, and drawn when the view is first opened
     drawPath();
+    drawTargets();           // selecting a lost target is what gives it an arrow
     if (path && framedPathId !== path.target.id) framePath();
     framedPathId = path ? path.target.id : null;
   }
@@ -611,6 +624,91 @@ const Scene3D = (() => {
       labelHost.appendChild(element);
       pathLabels.push({ element, position: latest.clone() });
     });
+  }
+
+  // -- where each target is heading -------------------------------------------
+  //
+  // A target carries a smoothed velocity as well as a position — targets.py
+  // runs an alpha-beta filter over its contacts — so it can be drawn and not
+  // just listed: an arrow from the last fix along that velocity, HORIZON_S
+  // long. It is exactly the dead reckoning the tracker predicts with when it
+  // decides which contact belongs to which target, so the arrow is pointing
+  // where the Server itself will look next.
+  //
+  // Only tracked targets get one. A lost target's velocity is frozen at its
+  // last contact, and an arrow would claim it is still flying — so it gets one
+  // only while it is the selected target, dimmed, to show which way it was
+  // going when it went.
+
+  const HORIZON_S = 10;         // an arrow reaches where the target will be in this long
+  const MIN_SPEED_MPS = 0.5;    // below this it is hovering and a heading is noise
+  const CLIMB_MPS = 1.0;        // and this much up or down is worth saying
+  const MAX_HEAD_M = 120;       // a fast target's arrowhead stops growing here
+
+  // A target's velocity in the scene's axes: x = east, y = up, z = -north,
+  // the same mapping toScene uses for its position.
+  const velocityOf = (t) =>
+    t.vel_e == null || t.vel_n == null || t.vel_u == null
+      ? null
+      : new THREE.Vector3(t.vel_e, t.vel_u, -t.vel_n);
+
+  function setTargets(list) {
+    targets = list || [];
+    if (!isReady()) return;  // kept, and drawn when the view is first opened
+    drawTargets();
+  }
+
+  function drawTargets() {
+    targetLabels.forEach((label) => label.element.remove());
+    targetLabels = [];
+    const selectedId = path ? path.target.id : null;
+    targetGroup = replace(targetGroup, (group) => {
+      if (!origin) return;
+      for (const target of targets) {
+        if (target.status === "active" || target.id === selectedId) {
+          addArrow(group, target, target.id === selectedId);
+        }
+      }
+    });
+  }
+
+  function addArrow(group, target, isSelected) {
+    const velocity = velocityOf(target);
+    if (!velocity || velocity.length() < MIN_SPEED_MPS) return;
+
+    const speed = velocity.length();
+    const direction = velocity.clone().normalize();
+    const from = toScene(target.lat, target.lon, target.alt_m);
+    const to = from.clone().addScaledVector(velocity, HORIZON_S);
+    const live = target.status === "active";
+    const opacity = live ? 0.9 : 0.35;
+
+    group.add(line([from, to], COLOUR.target, opacity));
+
+    // Built by hand rather than with ArrowHelper, whose geometry is shared
+    // across every instance: replace() disposes what it is given, and that
+    // would take the shape out from under the next frame's arrows.
+    const head = Math.min(speed * HORIZON_S * 0.28, MAX_HEAD_M);
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(head * 0.34, head, 12),
+      new THREE.MeshBasicMaterial({ color: COLOUR.target, transparent: true, opacity })
+    );
+    // ConeGeometry points up the y axis; swing it onto the heading, then sit it
+    // back by half its length so the tip lands on `to` rather than overshooting.
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    cone.position.copy(to).addScaledVector(direction, -head / 2);
+    group.add(cone);
+
+    // The number is already on the path label for the selected target, so the
+    // arrow only carries it for the others — which is what makes the rest of
+    // the targets identifiable in the scene at all.
+    const climb = target.vel_u > CLIMB_MPS ? " ↑" : target.vel_u < -CLIMB_MPS ? " ↓" : "";
+    const element = document.createElement("span");
+    element.className = `scene-label target-label speed ${target.status || ""}`;
+    element.textContent =
+      (isSelected ? "" : `T-${target.number} · `) + `${speed.toFixed(0)} m/s${climb}`;
+    labelHost.appendChild(element);
+    targetLabels.push({ element, position: to.clone() });
   }
 
   // Swing round to a target the first time it's selected, taking in its whole path.
@@ -722,6 +820,10 @@ const Scene3D = (() => {
       ...nodes.filter((n) => n.view_cone)
         .flatMap((n) => n.view_cone.map(([lat, lon, alt]) => toScene(lat, lon, alt))),
       ...contacts.map((c) => toScene(c.lat, c.lon, c.alt_m)),
+      // A selected target and its path are the only things worth seeing once
+      // the trail window has emptied, so "fit all" has to take them in too.
+      ...(path ? path.contacts.map((c) => toScene(c.lat, c.lon, c.alt_m)) : []),
+      ...targets.map((t) => toScene(t.lat, t.lon, t.alt_m)),
     ];
   }
 
@@ -897,7 +999,7 @@ const Scene3D = (() => {
 
   return {
     init, isReady, show, hide,
-    setNodes, setContacts, previewCone,
+    setNodes, setContacts, setTargets, previewCone,
     setSelected, focus, reframe, setPath, toggleBasemap,
   };
 })();
