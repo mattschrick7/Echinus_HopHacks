@@ -683,13 +683,13 @@ async function poll() {
       await drawPath(target);
     }
 
-    const hubs = status.hubs.length ? status.hubs.join(", ") : "no hub connected";
-    const tracking = targets.filter((t) => t.status === "active").length;
-    el("status").textContent =
-      `${hubs} · ${nodes.length} node(s) · ${contacts.length} contact(s) · ${tracking} target(s)`;
-    el("status").classList.toggle("bad", status.hubs.length === 0);
+      const hubs = status.hubs.length ? status.hubs.join(", ") : "no hub connected";
+      const tracking = targets.filter((t) => t.status === "active").length;
+      el("status").lastElementChild.textContent =
+        `${hubs} · ${nodes.length} node(s) · ${contacts.length} contact(s) · ${tracking} target(s)`;
+      el("status").classList.toggle("bad", status.hubs.length === 0);
   } catch {
-    el("status").textContent = "cannot reach the server";
+    el("status").lastElementChild.textContent = "cannot reach the server";
     el("status").classList.add("bad");
   }
 }
