@@ -7,7 +7,7 @@ There are exactly three things to understand:
 
 | | What it is | What it does |
 |---|---|---|
-| **[Node](Node/)** | Raspberry Pi Zero 2W + camera + SX1262 LoRa HAT | Detects motion. Sends "I saw something 8° left and 12° above where I'm looking" over the radio. Knows nothing else about itself. |
+| **[Node](Node/)** | Raspberry Pi Zero 2W + camera + SX1262 LoRa HAT | Detects motion, tracks it across frames, and sends "I saw something 8° left and 12° above where I'm looking, moving right at 7°/s" over the radio. Knows nothing else about itself. |
 | **[Hub](Hub/)** | Raspberry Pi 4 + SX1262 LoRa HAT | Listens to the radio, forwards every packet to the Server over a websocket. Stores nothing, decides nothing. |
 | **[Server](Server/)** | A Linux box running Docker | Holds every node's position and orientation, turns their reports into world bearings, crosses bearings into positions, and serves the dashboard the operator works in. |
 
@@ -46,8 +46,9 @@ Echinus/
 ├── Node/                     Pi Zero: camera -> LoRa
 │       camera.py             Pi camera, or OpenCV off the Pi
 │       detector.py           motion detection and clutter filtering
+│       streaks.py            joins blobs into streaks, fits lines, picks targets
 │       preview.py            optional MJPEG view, for aiming a camera
-│       __main__.py           the loop: capture, detect, transmit
+│       __main__.py           the loop: capture, detect, fit, transmit
 │
 ├── Hub/                      Pi 4: LoRa -> websocket
 │       relay.py              decode, queue, forward, reconnect
@@ -143,8 +144,9 @@ git clone <repo> ~/echinus
 bash ~/echinus/Node/deploy/install.sh    # creates node.toml, then run it again
 ```
 
-Set `[node] id` in `Node/node.toml` — unique, 12 characters or fewer. That's
-the only per-node setting that matters.
+Set `[node] id` in `Node/node.toml` — unique, **4 characters or fewer** (it is
+a fixed 4-byte field in every packet). `n01`, `n02`, ... That's the only
+per-node setting that matters.
 
 ### Prove the radio link first
 
@@ -198,10 +200,17 @@ arrived before you placed it are kept, but can't be used — only new ones.
 
 ## How a detection becomes a position
 
-1. A node's camera sees a bright change. `detector.py` picks the strongest
-   motion blob and converts its centre to degrees off the lens axis.
-2. That, the node id and a timestamp go out as a 30-byte LoRa packet.
-3. The Hub decodes it and forwards it as JSON.
+1. A node's camera sees a bright change. `detector.py` finds every motion blob
+   and converts each centre to degrees off the lens axis.
+2. `streaks.py` joins those blobs across the last ten frames and fits a
+   straight line to each. Only streaks that fit well — eight points, four
+   frames running — count as targets. This is where clutter dies: a branch in
+   wind is only *locally* straight, so it fails over a longer window, while a
+   drone's fit only improves.
+3. Each confirmed target's fit — bearing plus angular rate — goes out as a
+   22-byte LoRa packet, about once a second. Several targets share one packet.
+   The Hub decodes it, expands it to one detection per target, and forwards
+   them as JSON.
 4. The Server looks up the node's orientation and converts
    camera-relative angles into a compass bearing and elevation
    (`geometry.camera_to_world_azel`).
@@ -309,13 +318,29 @@ The dashboard is a thin client over these; `curl` works just as well.
   address and sends it to nobody. `radio.py` adds them, plus the three bytes
   Waveshare's demo receiver reads back as the sender — so their tools and ours
   can read each other's traffic.
-- **Clocks matter.** Detections are matched by the node's own timestamp, so
-  the Pis need NTP. The systemd units wait for time sync; if the hub is the
-  only network, point `chrony` on the nodes at it.
+- **Node clocks don't matter.** A packet carries no time, only how long ago the
+  node saw what it is reporting, measured as the bytes go out. The hub dates it
+  `arrival - age`, so every detection in the deployment is on one clock and the
+  nodes need no NTP. Dating by arrival instead would not work: transmissions
+  are jittered and deferred by listen-before-talk, so the delay is large and
+  varies per packet, and two nodes seeing one drone could arrive seconds apart.
+- **Airtime is the budget.** At 2400bps a 22-byte packet is about 110ms on the
+  air, so six nodes reporting once a second is most of the channel. This is why
+  nodes fit lines and send conclusions rather than transmitting every frame —
+  doing the latter demanded roughly 200% of the channel from a single node, and
+  what survived was decided by collisions rather than by anything useful. The
+  knobs are `[transmit] interval_s` and `[tracking]` in `Node/node.toml`; raise
+  the interval before raising `air_speed_bps`, since it costs only update rate
+  and not range.
+- **Loss is measurable now.** Every packet carries a sequence number, so the
+  hub can tell a dropped transmission from a quiet camera. It prints a per-node
+  received/lost/CRC-failed line every minute, and `--listen` does the same —
+  run every node with `--beacon` and the answer is on screen in a minute.
 - **`sx126x.py` isn't on PyPI.** The install scripts fetch Waveshare's driver;
   if the download fails, copy it in by hand — they tell you where.
 - **The websocket is unauthenticated.** Fine on a LAN. Put it behind a reverse
   proxy with TLS and a token before exposing it to the internet.
-- **Tuning lives at the top of two files.** Detection sensitivity in
-  `Node/node.toml`; how strict tracking is (`MAX_GAP_M`, `BUCKET_MS`,
-  `MIN_NODES`) in the constants at the top of `Server/tracker.py`.
+- **Tuning lives at the top of two files.** Detection sensitivity, streak
+  filtering and transmit rate in `Node/node.toml`; how strict cross-node
+  tracking is (`MEETING_ANGLE_DEG`, `BUCKET_MS`, `MIN_NODES`) in the constants
+  at the top of `Server/tracker.py`.

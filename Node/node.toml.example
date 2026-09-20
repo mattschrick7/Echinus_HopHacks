@@ -5,10 +5,13 @@
 # to know its own name and how to talk to the radio.
 
 [node]
-# Unique across the whole deployment, max 12 ASCII characters. The Server keys
-# everything — position, orientation, detections — on this string, so once a
+# Unique across the whole deployment, MAX 4 ASCII CHARACTERS — the id is a
+# fixed 4-byte field in every packet, and at 2400bps every byte is airtime.
+# "n01".."n99" is the obvious scheme. The node refuses to start on a longer
+# one rather than truncating it, because truncation would silently collapse
+# two nodes onto one id. The Server keys everything on this string, so once a
 # node is deployed, don't change it.
-id = "node-01"
+id = "n01"
 
 [camera]
 width     = 640
@@ -26,6 +29,55 @@ activity_ceiling = 0.35   # occupancy at which a pixel is fully suppressed
 # alpha                = 0.05   # background adaptation rate
 # brightness_threshold = 30.0   # per-pixel change needed to count as motion
 # min_active_pixels    = 50     # smallest blob that counts as a detection
+# max_candidates       = 8      # blobs per frame handed to the tracker
+
+[tracking]
+# The node keeps the last few frames of blobs, joins them into streaks, fits a
+# straight line to each, and transmits only the ones that fit. See streaks.py.
+#
+# This is what keeps the deployment on the air. A node that transmitted every
+# frame it saw motion demanded ~200% of a 2400bps channel BY ITSELF; six such
+# nodes watching one target is twelve times what the channel holds, which is
+# not "slow" but "nothing gets through intact". Fitting a line instead, and
+# sending the fit once a second, is ~14% per node.
+max_frames       = 10    # frames of history per streak (~0.7s at 15fps)
+min_points       = 8     # of those, how many a streak needs before it counts
+confirm_frames   = 4     # consecutive good fits before it becomes a target
+max_residual_deg = 0.5   # RMS distance from the fitted line to still count
+
+# min_points and confirm_frames are the clutter rejection, and they work
+# because a swinging branch is only *locally* straight: judged over 5 frames it
+# looks like a line, over 8 frames four times running it does not. Lowering
+# either will put branches on the air.
+
+# Uncomment to tune association:
+# gate_deg     = 2.0    # how far from its prediction a streak accepts a blob
+# max_rate_dps = 60.0   # ...plus this per second of gap, for a coasting streak
+# coast_frames = 3      # frames a streak survives with no blob before it dies
+# max_streaks  = 12     # cap, so a windy day can't grow the association loop
+
+# A floor on angular speed. OFF by default and it should usually stay off:
+# angular rate falls with range, so a 15 m/s drone at 2 km subtends only
+# 0.4 deg/s. A floor that tidies up a bench test would blind the deployment to
+# exactly the distant targets it exists to see.
+# min_rate_dps = 0.0
+
+[transmit]
+# How often the fits go out. interval_s is the knob that decides airtime:
+# offered load is roughly (nodes x 1/interval_s x 0.11s) at 2400bps, and the
+# channel starts misbehaving much above 0.6. Raise it before raising
+# air_speed_bps, because it costs nothing but update rate.
+interval_s      = 1.0   # between packets for an established target
+fast_interval_s = 0.5   # ...and while one is newly confirmed
+fast_for_s      = 3.0   # how long "newly confirmed" lasts
+max_targets     = 3     # targets per packet; batching amortises the preamble
+jitter_s        = 0.15  # random delay before each send, so nodes that detect
+                        # the same target on the same frame don't transmit
+                        # together — listen-before-talk alone won't separate
+                        # them, because they all hear a clear channel at once
+queue_depth     = 4     # packets held for the radio; the oldest is dropped
+                        # first, because a stale bearing is worth less than a
+                        # current one
 
 [lora]
 # Must match the Hub's [lora] settings exactly.
@@ -33,7 +85,19 @@ serial_port   = "/dev/serial0"  # alias for the GPIO UART, whichever it is
 frequency_mhz = 915   # 851-930 (E22-900T22S) or 411-493 (E22-400T22S)
 address       = 0     # 0-65535; 65535 hears every address on this channel
 power_dbm     = 22    # one of 10, 13, 17, 22 — the driver knows no others
+
+# Airtime per packet, and therefore how many nodes fit. A 24-byte packet is
+# ~110ms on air at 2400, ~55ms at 4800, ~28ms at 9600. Slower is more
+# sensitive — roughly 3dB per halving, so 2400 reaches perhaps twice as far as
+# 9600. Start here; the hub prints per-node loss counters, so move only if
+# they say to, and check the RSSI readings first to see if you have the margin.
 air_speed_bps = 2400  # 1200, 2400, 4800, 9600, 19200, 38400 or 62500
+
+# Listen before talk. The module samples the channel and defers if it hears
+# traffic — for up to two seconds before sending anyway, which is why the node
+# transmits from a worker thread rather than the capture loop. Waveshare's
+# driver never sets this bit; echinus-link sets it directly.
+lbt = true
 
 # Which radio to address. Leave it out and packets go to our own address,
 # which is what you want when the whole deployment shares one. Set it to
@@ -41,7 +105,6 @@ air_speed_bps = 2400  # 1200, 2400, 4800, 9600, 19200, 38400 or 62500
 # destination = 65535
 
 # Have the module append a signal-strength byte to everything it receives.
-# Waveshare's demo turns this on; we leave it off, because that extra byte
-# lands in the receive stream and could be mistaken for the start of a packet.
-# It only affects what *this* radio receives, never what it transmits.
+# A node only transmits, so this does nothing here — turn it on in hub.toml,
+# where the reading is the link margin you need to choose an air speed.
 rssi = false

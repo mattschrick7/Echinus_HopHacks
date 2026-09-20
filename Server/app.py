@@ -97,16 +97,22 @@ async def hub_socket(ws: WebSocket) -> None:
     hub_id = "unknown"
     try:
         while True:
-            message = json.loads(await ws.receive_text())
-            if message.get("type") == "hello":
-                hub_id = message.get("hub_id", hub_id)
-                connected_hubs.add(hub_id)
-                print(f"hub connected: {hub_id}", flush=True)
-                continue
-            record(message)
-    except (WebSocketDisconnect, json.JSONDecodeError, KeyError) as exc:
-        if not isinstance(exc, WebSocketDisconnect):
-            print(f"hub {hub_id} sent something unusable: {exc}", flush=True)
+            raw = await ws.receive_text()
+            try:
+                message = json.loads(raw)
+                if message.get("type") == "hello":
+                    hub_id = message.get("hub_id", hub_id)
+                    connected_hubs.add(hub_id)
+                    print(f"hub connected: {hub_id}", flush=True)
+                    continue
+                record(message)
+            except Exception as exc:
+                # One unusable message must cost one message. This used to
+                # escape the loop and close the socket, and the hub's reconnect
+                # backoff then threw away five seconds of everyone's packets.
+                print(f"hub {hub_id} sent something unusable: {exc}", flush=True)
+    except WebSocketDisconnect:
+        pass
     finally:
         connected_hubs.discard(hub_id)
         print(f"hub disconnected: {hub_id}", flush=True)

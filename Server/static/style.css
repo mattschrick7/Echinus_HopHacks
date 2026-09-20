@@ -125,6 +125,10 @@ body[data-view="2d"] #scene, body[data-view="3d"] #map { visibility: hidden; }
   font-size: 0.8rem;
 }
 .scene-label.target-label.lost { opacity: 0.7; }
+/* The speed at the tip of a heading arrow: the same family as the T-n label
+   it belongs to, stepped back so the number stays the louder of the two. */
+.scene-label.target-label.speed { font-size: 0.72rem; font-weight: 500; opacity: 0.85; }
+.scene-label.target-label.speed.lost { opacity: 0.45; }
 
 .scene-info {
   position: absolute;
@@ -143,6 +147,8 @@ body[data-view="2d"] #scene, body[data-view="3d"] #map { visibility: hidden; }
 .scene-fact span { width: 74px; flex: none; color: var(--muted); }
 .scene-fact div { min-width: 0; }
 
+/* Sits over map tiles, so it carries its own backdrop rather than trusting
+   whatever is underneath to be dark. */
 .scene-hint {
   position: absolute;
   left: 12px;
@@ -150,9 +156,13 @@ body[data-view="2d"] #scene, body[data-view="3d"] #map { visibility: hidden; }
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: rgba(20, 22, 26, 0.82);
   font-size: 0.74rem;
   color: var(--muted);
 }
+.scene-hint .credit { opacity: 0.7; }
 
 aside {
   width: 360px;
@@ -374,6 +384,26 @@ button.danger { margin-left: auto; background: none; border-color: var(--bad); c
 }
 .marker.path-point { background: var(--target); border: 1px solid #fff; }
 .target-trail { stroke-linecap: round; stroke-linejoin: round; }
+
+/* The head of a target's heading arrow: a triangle pointing north until the
+   inline transform spins it onto the bearing. A lost target's is faded. */
+.heading-arrow {
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 11px solid var(--target);
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6));
+}
+.heading-arrow.dim { opacity: 0.4; }
+.dot.heading {
+  border-radius: 0;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 9px solid var(--target);
+}
 
 /* ── detection feed ───────────────────────────────────────────────────────── */
 

@@ -39,6 +39,7 @@ class MotionDetector:
         suppress_clutter: bool = True,
         activity_alpha: float = 0.02,
         activity_ceiling: float = 0.35,
+        max_candidates: int = 8,
     ) -> None:
         self.width = width
         self.height = height
@@ -49,19 +50,41 @@ class MotionDetector:
         self.suppress_clutter = suppress_clutter
         self.activity_alpha = activity_alpha
         self.activity_ceiling = activity_ceiling
+        self.max_candidates = max_candidates
 
         self._average: np.ndarray | None = None
         self._activity: np.ndarray | None = None
+        self._xs: np.ndarray | None = None  # ravelled pixel coordinates, cached
+        self._ys: np.ndarray | None = None  # so centroids cost three bincounts
         self.last_centroid: tuple[float, float] | None = None
+        self.last_centroids: list[tuple[float, float]] = []
+        """Every candidate's centroid this frame, strongest first — for the preview."""
 
     def update(self, frame: np.ndarray) -> tuple[float, float] | None:
-        """Feed one uint8 grayscale frame.
+        """Feed one uint8 grayscale frame; get back the single strongest blob.
 
         Returns (az_deg, el_deg) relative to the lens axis when something moved,
         or None otherwise. The first frame always returns None — it becomes the
         initial background.
+
+        Kept as a thin wrapper over candidates() because plenty of callers only
+        ever wanted the best blob, and the streak tracker is the only one that
+        needs the rest.
+        """
+        found = self.candidates(frame)
+        return (found[0][0], found[0][1]) if found else None
+
+    def candidates(self, frame: np.ndarray) -> list[tuple[float, float, float]]:
+        """Every blob worth considering this frame, as (az_deg, el_deg, mass).
+
+        Strongest first, at most `max_candidates`. The streak tracker needs all
+        of them: association across frames only works if a target that is
+        briefly the *second* brightest thing in view still gets offered up,
+        and taking only the winner is how a track loses its object to a passing
+        car and never gets it back.
         """
         f = frame.astype(np.float32)
+        self.last_centroids = []
 
         if self._average is None:
             # Trust the frame over the config: a camera may not give the size
@@ -70,7 +93,9 @@ class MotionDetector:
             self.height, self.width = frame.shape[:2]
             self._average = f.copy()
             self._activity = np.zeros_like(f)
-            return None
+            ys, xs = np.indices((self.height, self.width))
+            self._xs, self._ys = xs.ravel().astype(np.float32), ys.ravel().astype(np.float32)
+            return []
 
         mask = np.abs(f - self._average) > self.brightness_threshold
 
@@ -92,27 +117,36 @@ class MotionDetector:
         # Gate on weighted mass, not raw pixel count, so a frame of nothing but
         # chronic clutter can't trip a detection.
         if float(weight[active].sum()) < self.min_active_pixels:
-            return None
+            return []
 
         labelled, blob_count = label(active)
         if blob_count == 0:
-            return None
+            return []
 
         # Score blobs by summed weight: a big cluttered blob loses to a smaller
-        # but salient one.
-        mass = np.bincount(labelled.ravel(), weights=(weight * active).ravel())
+        # but salient one. Centroids come from the same pass — three bincounts
+        # over the frame rather than one np.where per blob, which matters when
+        # we now want several of them and the host is a Pi Zero.
+        flat = labelled.ravel()
+        weighted = (weight * active).ravel()
+        mass = np.bincount(flat, weights=weighted)
+        sum_x = np.bincount(flat, weights=weighted * self._xs)
+        sum_y = np.bincount(flat, weights=weighted * self._ys)
         mass[0] = 0.0  # label 0 is the background
-        best = int(mass.argmax())
-        if mass[best] < self.min_active_pixels:
-            return None
 
-        ys, xs = np.where(labelled == best)
-        w = weight[ys, xs]
-        cx = float((xs * w).sum() / w.sum())
-        cy = float((ys * w).sum() / w.sum())
-        self.last_centroid = (cx, cy)
+        order = np.argsort(mass)[::-1][: self.max_candidates]
+        found = []
+        for index in order:
+            m = float(mass[index])
+            if m < self.min_active_pixels:
+                break  # sorted, so everything after this is smaller too
+            cx, cy = float(sum_x[index] / m), float(sum_y[index] / m)
+            self.last_centroids.append((cx, cy))
+            az, el = self.pixel_to_azel(cx, cy)
+            found.append((az, el, m))
 
-        return self.pixel_to_azel(cx, cy)
+        self.last_centroid = self.last_centroids[0] if self.last_centroids else None
+        return found
 
     def pixel_to_azel(self, px: float, py: float) -> tuple[float, float]:
         """Pixel coordinates -> degrees off the lens axis (right +az, up +el).

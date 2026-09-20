@@ -44,26 +44,63 @@ def _describe(burst: bytes) -> str:
     return f"{burst.hex(' ')}  {text!r}"
 
 
+def _render(msg: dict) -> str:
+    """One decoded packet as a line, without the Server's message shape.
+
+    --listen is the tool you reach for when nothing works yet, so it prints
+    what actually arrived rather than what the Server would have been told.
+    """
+    if msg["type"] == "heartbeat":
+        return f"HEARTBEAT  {msg['node_id']:<6} seq={msg['seq']:<3} up={msg['uptime_s']}s"
+    targets = "  ".join(
+        f"T{t['target_id']} az={t['az_deg']:+7.2f} el={t['el_deg']:+7.2f} "
+        f"({t['az_rate_dps']:+6.1f},{t['el_rate_dps']:+6.1f})deg/s"
+        f"{' coast' if t['coasting'] else ''}"
+        for t in msg["targets"]
+    )
+    return (f"TARGETS    {msg['node_id']:<6} seq={msg['seq']:<3} "
+            f"age={msg['age_ms']:>5}ms  {targets}")
+
+
 def _listen(radio, raw: bool = False) -> None:
-    """Field debug: print every packet the radio hears and relay nothing."""
-    from echinus_hub.relay import summarise
+    """Field debug: print every packet the radio hears and relay nothing.
+
+    This is also where a deployment's collision problem becomes visible: run
+    every node with --beacon, watch the loss counters here, and the answer is
+    on screen in under a minute.
+    """
+    import time
+
+    from echinus_hub.relay import REPORT_EVERY_S, Stats
 
     print("listening — Ctrl-C to stop", flush=True)
     buffer = b""
+    stats = Stats()
+    next_report = time.monotonic() + REPORT_EVERY_S
     try:
         while True:
             burst = radio.recv(timeout=1.0)
             if raw and burst:
                 print(f"  raw  {_describe(burst)}", flush=True)
             buffer += burst
-            found, buffer = packets.extract(buffer)
+            found, buffer = packets.extract(buffer, stats.framing)
             for packet in found:
                 try:
-                    print(summarise(packets.decode(packet)), flush=True)
+                    msg = packets.decode(packet)
                 except ValueError as exc:
                     print(f"bad packet: {exc}", flush=True)
+                    continue
+                lost = stats.saw(msg["node_id"], msg["seq"])
+                if lost:
+                    print(f"lost {lost} packet(s) from {msg['node_id']}", flush=True)
+                print(_render(msg), flush=True)
+
+            if time.monotonic() >= next_report:
+                next_report = time.monotonic() + REPORT_EVERY_S
+                print(stats.summary(), flush=True)
     except KeyboardInterrupt:
-        print("\nstopped")
+        print(f"\n{stats.summary()}")
+        print("stopped")
 
 
 async def _relay(radio, server_url: str, hub_id: str) -> None:

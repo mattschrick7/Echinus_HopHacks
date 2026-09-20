@@ -37,9 +37,24 @@ from __future__ import annotations
 
 import time
 
-_POLL_S = 0.02         # how often recv() checks the UART for the first byte
-_BURST_SETTLE_S = 0.5  # once bytes start arriving, wait this long for the rest
-                       # — the same pause Waveshare's own receive() takes
+_POLL_S = 0.02          # how often recv() checks the UART for the first byte
+_BURST_SETTLE_S = 0.15  # once bytes start arriving, wait this long for the rest.
+                        # Waveshare's own receive() waits 0.5s; our packets are
+                        # tens of bytes, so that was mostly added latency.
+
+# Register 3 (cfg_reg[9]), bit 4: listen before talk. The module samples the
+# channel and defers if it hears traffic, for up to two seconds before sending
+# anyway. Waveshare's driver never sets it — see _enable_lbt().
+_LBT_BIT = 0x10
+
+# LoRa spends more time on air than the payload's bit count suggests: preamble,
+# sync word, header, its own CRC. A flat 25% is crude but close enough to pace
+# transmissions with, which is all estimate_airtime_s() is for.
+_AIRTIME_OVERHEAD = 1.25
+
+# The module consumes the first three bytes of what we hand it as a
+# destination; they never go on the air. See address_header().
+_HEADER_BYTES_EATEN = 3
 
 # Values the driver's lora_power_dic / lora_air_speed_dic accept. Anything else
 # becomes None, and then `None + 0x20`.
@@ -64,6 +79,7 @@ DEFAULTS = {
     "power_dbm": 22,
     "air_speed_bps": 2400,
     "rssi": False,
+    "lbt": True,
 }
 
 
@@ -137,6 +153,7 @@ class Radio:
         power_dbm: int = DEFAULTS["power_dbm"],
         air_speed_bps: int = DEFAULTS["air_speed_bps"],
         rssi: bool = DEFAULTS["rssi"],
+        lbt: bool = DEFAULTS["lbt"],
         verify: bool = True,
     ) -> None:
         # Everything the driver would fail on obscurely, checked while we can
@@ -180,7 +197,16 @@ class Radio:
         self.address = address
         self.destination = destination
         self.channel = channel
+        self.air_speed_bps = air_speed_bps
+        self.lbt = lbt
         self._header = address_header(address, channel, destination)
+
+        if lbt and not self._enable_lbt():
+            print(
+                "radio: the HAT did not accept listen-before-talk — transmissions "
+                "will not defer for each other",
+                flush=True,
+            )
 
         if verify:
             ok, detail = self.check_module_config()
@@ -193,6 +219,57 @@ class Radio:
                     "  nothing else holds the serial port.",
                     flush=True,
                 )
+
+    def _enable_lbt(self) -> bool:
+        """Turn on the module's listen-before-talk. The driver never does.
+
+        Without it, several nodes watching one target transmit at exactly the
+        same instant — which is not an edge case here but the design case, since
+        triangulation *requires* two or more nodes seeing the same thing at
+        once. With it, the module samples the channel first and defers.
+
+        The driver has no argument for this, so we set the bit in its own
+        cfg_reg and write the registers ourselves, using the same M1-high
+        configuration mode check_module_config() uses to read them. Because the
+        bit lives in cfg_reg, the readback there then verifies it for free.
+
+        Returns False rather than raising: a deployment with no LBT still
+        works, just worse, and the caller is better placed to decide.
+        """
+        try:
+            import RPi.GPIO as GPIO
+        except ImportError:
+            return True  # not on a Pi; nothing to configure and nothing to warn about
+        if self._serial is None:
+            return True
+
+        self._hat.cfg_reg[9] |= _LBT_BIT
+        try:
+            GPIO.output(self._hat.M1, GPIO.HIGH)  # configuration mode
+            time.sleep(0.1)
+            self._serial.flushInput()
+            self._serial.write(bytes(self._hat.cfg_reg))
+            time.sleep(0.2)
+            reply = bytes(self._serial.read(self._serial.inWaiting()))
+        finally:
+            GPIO.output(self._hat.M1, GPIO.LOW)  # back to transmission mode
+            time.sleep(0.1)
+            self._serial.flushInput()  # drop the reply, so recv() never sees it
+
+        return len(reply) >= 12 and reply[0] == 0xC1
+
+    def estimate_airtime_s(self, payload_bytes: int) -> float:
+        """Roughly how long `payload_bytes` will occupy the channel.
+
+        Used to pace consecutive sends. This matters more than it looks: the
+        driver hardcodes the UART to 9600 baud, and at the default 2400 bps air
+        speed the module drains four times slower than we can fill it. Writing
+        back-to-back overflows its buffer and truncates a packet mid-flight,
+        which is corruption that has nothing to do with collisions and happens
+        with a single node running alone.
+        """
+        on_air = payload_bytes + len(self._header) - _HEADER_BYTES_EATEN
+        return on_air * 8 / self.air_speed_bps * _AIRTIME_OVERHEAD
 
     def send(self, data: bytes) -> None:
         self._hat.send(self._header + data)
@@ -255,7 +332,9 @@ class Radio:
 
         return True, (
             f"configured — address {self.address}, channel {self.channel} "
-            f"({self.channel + self._hat.start_freq}.125MHz), addressing {self.destination}"
+            f"({self.channel + self._hat.start_freq}.125MHz), addressing {self.destination}, "
+            f"{self.air_speed_bps}bps air, "
+            f"listen-before-talk {'on' if got[6] & _LBT_BIT else 'OFF'}"
         )
 
     def close(self) -> None:

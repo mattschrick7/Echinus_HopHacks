@@ -63,24 +63,26 @@ def test_rejects_impossible_channel(channel):
 def test_receiver_skips_the_header_the_sender_leaves_on_the_air():
     """The last three header bytes travel as payload; extract() must ignore
     them and still find the packet."""
-    sent = packets.encode_detect("node-01", 1_700_000_000_000, -8.25, 12.5)
+    sent = packets.encode_targets(
+        "n01", 0, 1_700_000_000_000, [packets.Target(1, -8.25, 12.5)]
+    )
     on_the_air = address_header(0, 65)[3:] + sent  # module eats the first three
 
     found, leftover = packets.extract(on_the_air)
 
     assert found == [sent]
     assert leftover == b""
-    assert packets.decode(found[0])["node_id"] == "node-01"
+    assert packets.decode(found[0])["node_id"] == "n01"
 
 
 def test_a_header_less_packet_is_addressed_to_nonsense():
     """Why this matters: without a header the module reads the packet's own
     first bytes as a destination."""
-    sent = packets.encode_detect("node-01", 1, 0.0, 0.0)
+    sent = packets.encode_targets("n01", 0, 1, [packets.Target(1, 0.0, 0.0)])
     destination = (sent[0] << 8) | sent[1]
     channel = sent[2]
 
-    assert destination == 0xE501        # not any address a deployment holds
+    assert destination == 0xE511        # not any address a deployment holds
     assert channel == ord("n")          # 850 + 110 = 960MHz, not 915
 
 
