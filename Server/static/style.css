@@ -351,7 +351,13 @@ button.danger { margin-left: auto; background: none; border-color: var(--bad); c
 .previous { border-top: 1px solid #202329; }
 
 .dot.target { background: var(--target); border: 2px solid #fff; }
+.marker.target-current {
+  background: var(--target);
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 3px rgba(255, 45, 120, 0.28), 0 0 10px rgba(255, 45, 120, 0.8);
+}
 .marker.path-point { background: var(--target); border: 1px solid #fff; }
+.target-trail { stroke-linecap: round; stroke-linejoin: round; }
 
 /* ── detection feed ───────────────────────────────────────────────────────── */
 

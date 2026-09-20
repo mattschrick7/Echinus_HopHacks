@@ -208,6 +208,11 @@ function drawContacts(contacts) {
   const live = new Set();
 
   for (const contact of contacts) {
+    // In line mode the selected target is rendered by drawPath. Remove its
+    // generic contact dots so the line does not sit underneath a second trail.
+    if (pathStyle() === "line" && contact.track_id === selectedTarget) {
+      continue;
+    }
     live.add(contact.id);
     const style = contactStyle(contact);
     let m = contactMarkers.get(contact.id);
@@ -489,24 +494,37 @@ function selectTarget(trackId) {
   poll();
 }
 
-// The whole flight path: every contact the target is made of, joined in time
-// order. Re-fetched each poll while the target is live, so it grows as it flies.
+// The whole flight path: historical contacts are dots or a line, while only
+// the newest contact gets a marker for the target's current position.
 async function drawPath(target) {
   if (!target) return;
   const seq = ++pathSeq;
   const contacts = await api(`/api/targets/${target.id}/contacts`);
   if (seq !== pathSeq || selectedTarget !== target.id) return;
-  if (!changed("path", [target.id, contacts.length, target.status])) return;
+  if (!changed("path", [target.id, contacts.length, target.status, pathStyle()])) return;
 
   latestPath = [target, contacts];
   Scene3D.setPath(target, contacts); // ignored until the 3D view is opened
 
   pathLayer.clearLayers();
   const points = contacts.map((c) => [c.lat, c.lon]);
-  L.polyline(points, { color: getComputedStyle(document.documentElement).getPropertyValue("--target"),
-                       weight: 3, opacity: 0.9, interactive: false }).addTo(pathLayer);
-  for (const c of contacts) {
-    marker([c.lat, c.lon], "path-point", 7).bindPopup(contactPopup(c)).addTo(pathLayer);
+  const history = contacts.slice(0, -1);
+  if (pathStyle() === "line" && points.length > 1) {
+    L.polyline(points, { color: getComputedStyle(document.documentElement).getPropertyValue("--target"),
+                         weight: 3, opacity: 0.9, smoothFactor: 1.5,
+                         className: "target-trail", interactive: false }).addTo(pathLayer);
+  } else {
+    for (const contact of history) {
+      marker([contact.lat, contact.lon], "path-point", 7)
+        .bindPopup(contactPopup(contact))
+        .addTo(pathLayer);
+    }
+  }
+  const current = contacts[contacts.length - 1];
+  if (current) {
+    marker([current.lat, current.lon], "target-current", 15)
+      .bindPopup(contactPopup(current))
+      .addTo(pathLayer);
   }
   if (!pathFitted && points.length) {
     map.fitBounds(L.latLngBounds(points).pad(0.3), { maxZoom: 16 });
@@ -629,6 +647,15 @@ try { trailSelect.value = localStorage.getItem("echinus.trail") || trailSelect.v
 const trailSeconds = () => parseFloat(trailSelect.value);
 trailSelect.onchange = () => {
   try { localStorage.setItem("echinus.trail", trailSelect.value); } catch {}
+  poll();
+};
+
+const pathStyleSelect = el("path-style");
+try { pathStyleSelect.value = localStorage.getItem("echinus.path-style") || pathStyleSelect.value; } catch {}
+const pathStyle = () => pathStyleSelect.value;
+pathStyleSelect.onchange = () => {
+  try { localStorage.setItem("echinus.path-style", pathStyleSelect.value); } catch {}
+  delete lastDrawn.path;
   poll();
 };
 
