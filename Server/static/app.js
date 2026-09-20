@@ -417,10 +417,14 @@ function targetCard(t) {
     t.speed_mps != null ? `${t.speed_mps.toFixed(0)} m/s` : null,
     t.alt_m != null ? `${t.alt_m.toFixed(0)} m up` : null,
   ].filter(Boolean);
+  const classification = t.classification || "unknown";
+  const classificationClass = classification.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  const evidence = (t.classification_reasons || []).join("; ");
   const html =
     `<div class="target-top">
        <b>T-${t.number}</b>
        <span class="pill ${t.status}">${t.status === "active" ? "tracking" : "lost"}</span>
+       <span class="classification ${classificationClass}" title="${evidence}">${classification}</span>
        <span class="dots">${t.node_ids.map((id) =>
          `<i class="dot" title="${id}" style="background:${colourFor(id)}"></i>`).join("")}</span>
      </div>
@@ -700,7 +704,8 @@ async function poll() {
     // Rebuild the list only when a target actually changes: a rebuild between
     // mouse-down and mouse-up swallows the click. "Last seen" ticks in place.
     if (changed("targets", [targets.map((t) => [t.id, t.status, t.contact_count, t.node_ids,
-                                                 t.speed_mps?.toFixed(0), t.alt_m?.toFixed(0)]),
+                             t.speed_mps?.toFixed(0), t.alt_m?.toFixed(0),
+                             t.classification, t.confidence]),
                             selectedTarget, showPrevious])) {
       drawTargetList(targets);
     }

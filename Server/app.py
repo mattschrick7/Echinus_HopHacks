@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 import db
+import classification
 import ingest
 import tracker
 from geometry import (
@@ -188,7 +189,10 @@ def api_contacts(limit: int = 200, max_age_s: float | None = None) -> list[dict]
 def api_targets(max_age_s: float | None = None) -> list[dict]:
     """Contacts chained into drones (targets.py). Every target ever confirmed,
     lost ones included; pass max_age_s to leave out lost ones older than that."""
-    return db.list_targets(conn, max_age_s)
+    targets = db.list_targets(conn, max_age_s)
+    for target in targets:
+        target.update(classification.classify_target(target, db.track_contacts(conn, target["id"])))
+    return targets
 
 
 @app.get("/api/targets/{track_id}/contacts")

@@ -316,6 +316,22 @@ button.danger { margin-left: auto; background: none; border-color: var(--bad); c
 .target-top b { font-family: ui-monospace, monospace; }
 .target-top .dots { margin-left: auto; display: flex; gap: 3px; }
 
+.classification {
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border: 1px solid #59606b;
+  border-radius: 9px;
+  color: #c5cad2;
+  font-size: 0.66rem;
+}
+.classification.aircraft-like { color: #8ac7ff; border-color: #416987; }
+.classification.drone-like { color: #8bd6b2; border-color: #3d705b; }
+.classification.bird-like { color: #e4b77c; border-color: #80613c; }
+.classification.transient-artifact { color: #e89b9b; border-color: #7d4b4b; }
+
 .pill {
   padding: 0 7px;
   border-radius: 9px;
