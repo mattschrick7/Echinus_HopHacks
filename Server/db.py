@@ -136,6 +136,10 @@ LATER_COLUMNS = {
         "track_id": "INTEGER",       # the target this contact belongs to
         "node_time_ms": "INTEGER",   # node clock of the bucket it came from
     },
+    "detections": {
+        "seq": "INTEGER",        # the node's packet counter, for deduplication
+        "target_id": "INTEGER",  # which of that node's streaks this bearing is
+    },
 }
 
 
@@ -240,13 +244,17 @@ def insert_detection(
     cam_az_deg: float,
     cam_el_deg: float,
     world: tuple[float, float] | None,
+    seq: int | None = None,
+    target_id: int | None = None,
 ) -> int:
     cur = conn.execute(
         "INSERT INTO detections "
-        "(node_id, hub_id, node_time_ms, cam_az_deg, cam_el_deg, world_az_deg, world_el_deg) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(node_id, hub_id, node_time_ms, cam_az_deg, cam_el_deg, world_az_deg, world_el_deg, "
+        "seq, target_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (node_id, hub_id, node_time_ms, cam_az_deg, cam_el_deg,
-         world[0] if world else None, world[1] if world else None),
+         world[0] if world else None, world[1] if world else None,
+         seq, target_id),
     )
     conn.commit()
     return cur.lastrowid
@@ -395,6 +403,30 @@ def detection_exists(conn, node_id: str, node_time_ms: int, cam_az_deg: float, c
         "SELECT 1 FROM detections WHERE node_time_ms = ? AND node_id = ? "
         "AND cam_az_deg = ? AND cam_el_deg = ? LIMIT 1",
         (node_time_ms, node_id, cam_az_deg, cam_el_deg),
+    ).fetchone()
+    return row is not None
+
+
+# How far back to look for a copy of a packet. Sequence numbers wrap at 256, so
+# this has to be short enough that the same number can't come round again —
+# at a packet a second, thirty seconds is about sixty of them.
+DUPLICATE_WINDOW_MS = 30_000
+
+
+def packet_seen(conn, node_id: str, seq: int, target_id: int, node_time_ms: int) -> bool:
+    """Has this exact observation already arrived, by another hub?
+
+    Identity rather than resemblance. Detections used to be deduplicated on an
+    exact timestamp match, which worked only while the timestamp came from the
+    node and was therefore identical in every hub's copy. Now each hub dates a
+    packet by its own arrival, so two copies differ by a few milliseconds and
+    an equality test would let both through — and a doubled detection crosses
+    its own partner and invents a second target at the same spot.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM detections WHERE node_id = ? AND seq = ? AND target_id = ? "
+        "AND node_time_ms > ? LIMIT 1",
+        (node_id, seq, target_id, node_time_ms - DUPLICATE_WINDOW_MS),
     ).fetchone()
     return row is not None
 

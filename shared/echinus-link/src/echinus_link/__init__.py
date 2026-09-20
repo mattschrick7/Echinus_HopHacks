@@ -4,19 +4,23 @@ Shared by the Node (sends) and the Hub (receives). Import `Radio` only where a
 HAT is actually present; `packets` is pure Python and safe to import anywhere.
 """
 from echinus_link.packets import (
-    DETECT,
     HEARTBEAT,
+    TARGETS,
+    FramingStats,
+    Target,
     decode,
-    encode_detect,
     encode_heartbeat,
+    encode_targets,
     extract,
 )
 
 __all__ = [
-    "DETECT",
     "HEARTBEAT",
+    "TARGETS",
+    "FramingStats",
+    "Target",
     "decode",
-    "encode_detect",
     "encode_heartbeat",
+    "encode_targets",
     "extract",
 ]

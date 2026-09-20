@@ -32,10 +32,31 @@ def place(conn, node_id, east, north, yaw, pitch):
     return np.array([east, north, 0.0])
 
 
-def over_the_air(node_id, timestamp_ms, az, el, received_ms=None):
-    """Exactly what a hub forwards: the node's packet, decoded, plus the hub's stamps."""
-    message = packets.decode(packets.encode_detect(node_id, timestamp_ms, az, el))
-    message["hub_id"] = "hub-1"
+def over_the_air(node_id, timestamp_ms, az, el, received_ms=None, seq=0):
+    """Exactly what a hub forwards: the node's packet, decoded and expanded
+    into one detection per target, plus the hub's stamps.
+
+    Mirrors echinus_hub.relay.Relay._expand. Note what the node does *not*
+    send: a clock reading. `timestamp_ms` here is the instant we want the
+    detection to land on, and it is expressed on the wire as an age relative
+    to the hub's arrival time — which is the only clock in play."""
+    arrival = received_ms if received_ms is not None else timestamp_ms
+    wire = packets.encode_targets(
+        node_id, seq, arrival - timestamp_ms, [packets.Target(1, az, el)]
+    )
+    decoded = packets.decode(wire)
+    target = decoded["targets"][0]
+
+    message = {
+        "type": "detect",
+        "node_id": decoded["node_id"],
+        "timestamp_ms": arrival - decoded["age_ms"],
+        "az_deg": target["az_deg"],
+        "el_deg": target["el_deg"],
+        "target_id": target["target_id"],
+        "seq": decoded["seq"],
+        "hub_id": "hub-1",
+    }
     if received_ms is not None:
         message["received_ms"] = received_ms
     return message
@@ -44,8 +65,8 @@ def over_the_air(node_id, timestamp_ms, az, el, received_ms=None):
 def test_real_packets_from_two_nodes_become_a_contact(conn):
     """Two real-format detections, nodes facing each other, same instant."""
     target = np.array([0.0, 150.0, 250.0])
-    nodes = {"node-a": place(conn, "node-a", -500.0, 0.0, 90.0, 30.0),
-             "node-b": place(conn, "node-b", 500.0, 0.0, 270.0, 30.0)}
+    nodes = {"na": place(conn, "na", -500.0, 0.0, 90.0, 30.0),
+             "nb": place(conn, "nb", 500.0, 0.0, 270.0, 30.0)}
     for node_id, position in nodes.items():
         n = db.get_node(conn, node_id)
         direction = (target - position) / np.linalg.norm(target - position)
@@ -55,20 +76,29 @@ def test_real_packets_from_two_nodes_become_a_contact(conn):
     assert tracker.process(conn, db.detections_after(conn, 0)) == 1
     contact = db.list_contacts(conn)[0]
     fix = geodetic_to_enu(contact["lat"], contact["lon"], contact["alt_m"], *BASE)
-    # Float32 on the radio costs a little precision; still well inside a metre.
+    # Quantising the angles to hundredths of a degree costs a little
+    # precision; still well inside a metre at this range.
     assert np.linalg.norm(fix - target) < 1.0
-    assert contact["node_ids"] == ["node-a", "node-b"]
+    assert contact["node_ids"] == ["na", "nb"]
 
 
-def test_clock_offset_is_measured_from_hub_arrival(conn):
-    place(conn, "node-a", 0.0, 0.0, 0.0, 30.0)
-    ingest.record(conn, over_the_air("node-a", 1_000_000, 0.0, 0.0, received_ms=1_000_200))
-    assert db.get_node(conn, "node-a")["clock_offset_ms"] == pytest.approx(-200)
+def test_the_stored_offset_measures_the_link_not_the_clock(conn):
+    """What this column means changed when nodes stopped sending a time.
 
-    # A clock that has wandered 30 s off drags the smoothed figure after it.
+    It used to be clock skew — how far a node's clock had drifted from the
+    hub's. Nodes now send no clock reading at all, only how long ago they saw
+    something, so the figure is transport delay: jitter, waiting for a clear
+    channel, and airtime. It is always negative, and a large magnitude means
+    the channel is congested rather than that a Pi needs NTP."""
+    place(conn, "na", 0.0, 0.0, 0.0, 30.0)
+    ingest.record(conn, over_the_air("na", 1_000_000, 0.0, 0.0, received_ms=1_000_200, seq=1))
+    assert db.get_node(conn, "na")["clock_offset_ms"] == pytest.approx(-200)
+
+    # A node stuck behind a busy channel drags the smoothed figure out.
     for i in range(60):
-        ingest.record(conn, over_the_air("node-a", 1_030_000 + i, 0.0, 0.0, received_ms=1_000_000 + i))
-    assert db.get_node(conn, "node-a")["clock_offset_ms"] > 25_000
+        ingest.record(conn, over_the_air(
+            "na", 1_000_000 + i, 0.0, 0.0, received_ms=1_001_800 + i, seq=i + 2))
+    assert db.get_node(conn, "na")["clock_offset_ms"] < -1_500
 
 
 def test_simulated_messages_leave_the_clock_unknown(conn):
@@ -79,26 +109,33 @@ def test_simulated_messages_leave_the_clock_unknown(conn):
 
 
 def test_an_angle_outside_the_set_view_is_flagged(conn):
-    place(conn, "node-a", 0.0, 0.0, 0.0, 30.0)  # 62.2 x 48.8 by default
-    ingest.record(conn, over_the_air("node-a", 1, 30.0, 20.0))
-    assert db.get_node(conn, "node-a")["out_of_view_at"] is None
+    place(conn, "na", 0.0, 0.0, 0.0, 30.0)  # 62.2 x 48.8 by default
+    ingest.record(conn, over_the_air("na", 1, 30.0, 20.0))
+    assert db.get_node(conn, "na")["out_of_view_at"] is None
 
     # A node whose node.toml says 90 degrees across reports 40 degrees off-axis.
-    ingest.record(conn, over_the_air("node-a", 2, 40.0, 5.0))
-    node = db.get_node(conn, "node-a")
+    ingest.record(conn, over_the_air("na", 2, 40.0, 5.0))
+    node = db.get_node(conn, "na")
     assert node["out_of_view_at"] is not None
     assert "az 40.0" in node["out_of_view_note"]
 
     # Correcting the field of view in the dashboard clears the warning.
-    db.update_node(conn, "node-a", {"fov_h_deg": 90.0})
-    assert db.get_node(conn, "node-a")["out_of_view_at"] is None
+    db.update_node(conn, "na", {"fov_h_deg": 90.0})
+    assert db.get_node(conn, "na")["out_of_view_at"] is None
 
 
 def test_the_same_packet_through_two_hubs_is_stored_once(conn):
-    place(conn, "node-a", 0.0, 0.0, 0.0, 30.0)
-    for hub in ("hub-1", "hub-2"):
-        message = over_the_air("node-a", 1_000_000, 3.5, -2.0, received_ms=1_000_100)
+    place(conn, "na", 0.0, 0.0, 0.0, 30.0)
+    # Two hubs, one packet. Each dates it by its own arrival, so the two copies
+    # no longer share a timestamp — the sequence number is what identifies them
+    # as the same transmission.
+    for offset, hub in enumerate(("hub-1", "hub-2")):
+        message = over_the_air("na", 1_000_000, 3.5, -2.0, received_ms=1_000_100 + offset, seq=7)
         message["hub_id"] = hub
         ingest.record(conn, message)
-    ingest.record(conn, over_the_air("node-a", 1_000_200, 3.5, -2.0))  # a new moment: kept
+    assert len(db.list_detections(conn)) == 1
+
+    # The node's next transmission is a different packet, even at the same
+    # bearing — a target it is still tracking reports the same angle twice.
+    ingest.record(conn, over_the_air("na", 1_000_200, 3.5, -2.0, received_ms=1_000_300, seq=8))
     assert len(db.list_detections(conn)) == 2

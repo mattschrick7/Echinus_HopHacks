@@ -39,12 +39,25 @@ def record(conn, message: dict) -> None:
         return
 
     node = db.ensure_node(conn, node_id)
-    if message["type"] != "detect":
+    if message.get("type") != "detect":
         return  # heartbeats just refresh last_seen, which ensure_node did
 
-    az, el = message["az_deg"], message["el_deg"]
+    # Guarded rather than subscripted. A malformed message used to raise out of
+    # here and tear down the hub's whole websocket — see app.hub_socket — so
+    # one bad field cost every packet from that hub for the five seconds its
+    # reconnect took.
+    az, el = message.get("az_deg"), message.get("el_deg")
+    if not isinstance(az, (int, float)) or not isinstance(el, (int, float)):
+        return
     node_time_ms = message.get("timestamp_ms", 0)
+    if not isinstance(node_time_ms, int):
+        return
 
+    # Nodes no longer send a clock reading, so this is no longer clock skew:
+    # it is how long a packet took to get here, and it is always negative. A
+    # large magnitude means the channel is congested — the node's transmission
+    # sat behind listen-before-talk and the queue — which is a more useful
+    # thing to watch than the drift this used to measure.
     if "received_ms" in message:  # set by a real hub, not by the simulator
         offset = node_time_ms - message["received_ms"]
         previous = node["clock_offset_ms"]
@@ -57,7 +70,15 @@ def record(conn, message: dict) -> None:
     # Two hubs in earshot of one node both forward its packet. It is one
     # detection; stored twice, the copies would cross each other's partners
     # and make a second contact — and a second target — at the same spot.
-    if db.detection_exists(conn, node_id, node_time_ms, az, el):
+    #
+    # Real packets carry a sequence number and a target id, which identify an
+    # observation exactly. The simulator speaks straight to the websocket and
+    # has neither, so it falls back to matching on time and angle.
+    seq, target_id = message.get("seq"), message.get("target_id")
+    if seq is not None and target_id is not None:
+        if db.packet_seen(conn, node_id, seq, target_id, node_time_ms):
+            return
+    elif db.detection_exists(conn, node_id, node_time_ms, az, el):
         return
 
     world = None
@@ -72,4 +93,6 @@ def record(conn, message: dict) -> None:
         cam_az_deg=az,
         cam_el_deg=el,
         world=world,
+        seq=seq,
+        target_id=target_id,
     )

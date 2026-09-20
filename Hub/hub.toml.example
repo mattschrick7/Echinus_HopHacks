@@ -17,8 +17,16 @@ frequency_mhz = 915   # 851-930 (E22-900T22S) or 411-493 (E22-400T22S)
 address       = 0     # 0-65535; must be the address the nodes send to
 power_dbm     = 22    # one of 10, 13, 17, 22 — the driver knows no others
 air_speed_bps = 2400  # 1200, 2400, 4800, 9600, 19200, 38400 or 62500
+lbt           = true  # listen before talk; see the note in node.toml.example
 
 # Have the module append a signal-strength byte to everything it receives.
-# Waveshare's demo turns this on; we leave it off, because that extra byte
-# lands in the receive stream and could be mistaken for the start of a packet.
-rssi = false
+#
+# This used to be off on both ends, because that extra byte lands in the
+# receive stream and could be mistaken for the start of a packet. Packets now
+# carry a CRC, so a stray byte can't be mistaken for one — and the reading is
+# worth having, because it is the only link-margin telemetry this module
+# offers and it is what tells you whether you can afford a faster air speed.
+#
+# Receive-side only: it costs no airtime and the nodes don't need it. Leave it
+# false on the nodes.
+rssi = true
