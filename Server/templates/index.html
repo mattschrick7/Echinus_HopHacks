@@ -10,16 +10,20 @@
 <body>
 
 <header>
-  <h1>Echinus</h1>
-  <span id="status">connecting…</span>
+  <div class="brand-block">
+    <h1>Echinus</h1>
+    <span class="brand-tag">field console</span>
+  </div>
+  <span id="status"><i class="status-light"></i><span>connecting…</span></span>
 
   <!-- The map flattens the cones and the contacts; the scene keeps the height. -->
-  <span class="views">
-    <button id="view-2d" class="ghost small active">map</button>
-    <button id="view-3d" class="ghost small">3D</button>
-  </span>
+  <span class="header-controls">
+    <span class="views">
+      <button id="view-2d" class="ghost small active">map</button>
+      <button id="view-3d" class="ghost small">3D</button>
+    </span>
 
-  <span class="legend">
+    <span class="legend">
     <span class="key" title="A node, and its view cone: what its camera can see">
       <i class="dot node"></i><span class="word">node</span></span>
     <span class="key" title="A node that needs its position and orientation set">
@@ -38,6 +42,13 @@
         <option value="300">5 min</option>
       </select>
     </label>
+    <label class="key">history
+      <select id="path-style">
+        <option value="dots" selected>dots</option>
+        <option value="line">line</option>
+      </select>
+    </label>
+    </span>
   </span>
 </header>
 
@@ -58,11 +69,16 @@
   </div>
 
   <aside>
-    <div class="panel-head">
-      <h2>Nodes</h2>
-      <button id="add-node" class="ghost">+ Add</button>
-    </div>
-    <div id="node-list"></div>
+    <section class="side-section node-section">
+      <div class="panel-head">
+        <div>
+          <h2>Nodes</h2>
+          <p class="section-caption">Sensor network</p>
+        </div>
+        <button id="add-node" class="ghost">+ Add node</button>
+      </div>
+      <div id="node-list"></div>
+    </section>
 
     <!-- Editing a node. Everything here lives on the server, not on the node. -->
     <form id="editor" hidden>
@@ -115,11 +131,15 @@
     </form>
 
     <!-- Contacts the Server has chained into one drone each (targets.py). -->
-    <div class="panel-head"><h2>Targets</h2></div>
-    <div id="targets"></div>
+    <section class="side-section">
+      <div class="panel-head"><h2>Targets</h2></div>
+      <div id="targets"></div>
+    </section>
 
-    <div class="panel-head"><h2>Recent detections</h2></div>
-    <div id="feed"></div>
+    <section class="side-section feed-section">
+      <div class="panel-head"><h2>Recent detections</h2></div>
+      <div id="feed"></div>
+    </section>
   </aside>
 </main>
 

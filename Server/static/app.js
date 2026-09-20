@@ -212,6 +212,11 @@ function drawContacts(contacts) {
   const live = new Set();
 
   for (const contact of contacts) {
+    // In line mode the selected target is rendered by drawPath. Remove its
+    // generic contact dots so the line does not sit underneath a second trail.
+    if (pathStyle() === "line" && contact.track_id === selectedTarget) {
+      continue;
+    }
     live.add(contact.id);
     const style = contactStyle(contact);
     let m = contactMarkers.get(contact.id);
@@ -419,10 +424,14 @@ function targetCard(t) {
     t.speed_mps != null ? `${t.speed_mps.toFixed(0)} m/s` : null,
     t.alt_m != null ? `${t.alt_m.toFixed(0)} m up` : null,
   ].filter(Boolean);
+  const classification = t.classification || "unknown";
+  const classificationClass = classification.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  const evidence = (t.classification_reasons || []).join("; ");
   const html =
     `<div class="target-top">
        <b>T-${t.number}</b>
        <span class="pill ${t.status}">${t.status === "active" ? "tracking" : "lost"}</span>
+       <span class="classification ${classificationClass}" title="${evidence}">${classification}</span>
        <span class="dots">${t.node_ids.map((id) =>
          `<i class="dot" title="${id}" style="background:${colourFor(id)}"></i>`).join("")}</span>
      </div>
@@ -546,24 +555,37 @@ function selectTarget(trackId) {
   poll();
 }
 
-// The whole flight path: every contact the target is made of, joined in time
-// order. Re-fetched each poll while the target is live, so it grows as it flies.
+// The whole flight path: historical contacts are dots or a line, while only
+// the newest contact gets a marker for the target's current position.
 async function drawPath(target) {
   if (!target) return;
   const seq = ++pathSeq;
   const contacts = await api(`/api/targets/${target.id}/contacts`);
   if (seq !== pathSeq || selectedTarget !== target.id) return;
-  if (!changed("path", [target.id, contacts.length, target.status])) return;
+  if (!changed("path", [target.id, contacts.length, target.status, pathStyle()])) return;
 
   latestPath = [target, contacts];
   Scene3D.setPath(target, contacts); // ignored until the 3D view is opened
 
   pathLayer.clearLayers();
   const points = contacts.map((c) => [c.lat, c.lon]);
-  L.polyline(points, { color: getComputedStyle(document.documentElement).getPropertyValue("--target"),
-                       weight: 3, opacity: 0.9, interactive: false }).addTo(pathLayer);
-  for (const c of contacts) {
-    marker([c.lat, c.lon], "path-point", 7).bindPopup(contactPopup(c)).addTo(pathLayer);
+  const history = contacts.slice(0, -1);
+  if (pathStyle() === "line" && points.length > 1) {
+    L.polyline(points, { color: getComputedStyle(document.documentElement).getPropertyValue("--target"),
+                         weight: 3, opacity: 0.9, smoothFactor: 1.5,
+                         className: "target-trail", interactive: false }).addTo(pathLayer);
+  } else {
+    for (const contact of history) {
+      marker([contact.lat, contact.lon], "path-point", 7)
+        .bindPopup(contactPopup(contact))
+        .addTo(pathLayer);
+    }
+  }
+  const current = contacts[contacts.length - 1];
+  if (current) {
+    marker([current.lat, current.lon], "target-current", 15)
+      .bindPopup(contactPopup(current))
+      .addTo(pathLayer);
   }
   if (!pathFitted && points.length) {
     map.fitBounds(L.latLngBounds(points).pad(0.3), { maxZoom: 16 });
@@ -689,6 +711,15 @@ trailSelect.onchange = () => {
   poll();
 };
 
+const pathStyleSelect = el("path-style");
+try { pathStyleSelect.value = localStorage.getItem("echinus.path-style") || pathStyleSelect.value; } catch {}
+const pathStyle = () => pathStyleSelect.value;
+pathStyleSelect.onchange = () => {
+  try { localStorage.setItem("echinus.path-style", pathStyleSelect.value); } catch {}
+  delete lastDrawn.path;
+  poll();
+};
+
 // ── poll ─────────────────────────────────────────────────────────────────────
 
 // Redraw only when something actually changed, so an open popup or a hovered
@@ -730,7 +761,8 @@ async function poll() {
     // Rebuild the list only when a target actually changes: a rebuild between
     // mouse-down and mouse-up swallows the click. "Last seen" ticks in place.
     if (changed("targets", [targets.map((t) => [t.id, t.status, t.contact_count, t.node_ids,
-                                                 t.speed_mps?.toFixed(0), t.alt_m?.toFixed(0)]),
+                             t.speed_mps?.toFixed(0), t.alt_m?.toFixed(0),
+                             t.classification, t.confidence]),
                             selectedTarget, showPrevious])) {
       drawTargetList(targets);
     }
@@ -749,13 +781,13 @@ async function poll() {
       await drawPath(target);
     }
 
-    const hubs = status.hubs.length ? status.hubs.join(", ") : "no hub connected";
-    const tracking = targets.filter((t) => t.status === "active").length;
-    el("status").textContent =
-      `${hubs} · ${nodes.length} node(s) · ${contacts.length} contact(s) · ${tracking} target(s)`;
-    el("status").classList.toggle("bad", status.hubs.length === 0);
+      const hubs = status.hubs.length ? status.hubs.join(", ") : "no hub connected";
+      const tracking = targets.filter((t) => t.status === "active").length;
+      el("status").lastElementChild.textContent =
+        `${hubs} · ${nodes.length} node(s) · ${contacts.length} contact(s) · ${tracking} target(s)`;
+      el("status").classList.toggle("bad", status.hubs.length === 0);
   } catch {
-    el("status").textContent = "cannot reach the server";
+    el("status").lastElementChild.textContent = "cannot reach the server";
     el("status").classList.add("bad");
   }
 }
