@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 
 
-MIN_POINTS = 4
+MIN_POINTS = 3  # matches targets.CONFIRM_HITS, so confirmation alerts can be classified
 
 
 def _bearing_change(previous: tuple[float, float], current: tuple[float, float]) -> float:

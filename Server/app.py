@@ -22,12 +22,19 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+# Load per-machine settings before importing db or alerts: both read their
+# configuration during import or when the server starts.
+HERE = Path(__file__).parent
+load_dotenv(HERE / ".env")
+
 import db
 import classification
+import alerts
 import ingest
 import tracker
 from geometry import (
@@ -38,8 +45,6 @@ from geometry import (
     view_footprint,
 )
 
-HERE = Path(__file__).parent
-
 conn = db.connect()
 
 # Hubs currently connected, for the dashboard's status line.
@@ -49,9 +54,11 @@ connected_hubs: set[str] = set()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     task = asyncio.create_task(tracker.run(conn))
+    alert_task = asyncio.create_task(alerts.run(conn))
     print("server ready", flush=True)
     yield
     task.cancel()
+    alert_task.cancel()
 
 
 app = FastAPI(title="Echinus", lifespan=lifespan)

@@ -95,6 +95,13 @@ CREATE TABLE IF NOT EXISTS tracks (
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks (status);
+
+CREATE TABLE IF NOT EXISTS alert_outbox (
+    track_id    INTEGER PRIMARY KEY,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    sent_at     TEXT,
+    last_error  TEXT
+);
 """
 
 # Indexes on columns added by LATER_COLUMNS, created once those columns exist.
@@ -362,6 +369,36 @@ def update_track(conn, track_id: int, changes: dict[str, Any]) -> None:
     conn.execute(
         f"UPDATE tracks SET {assignments}, updated_at = datetime('now') WHERE id = ?",
         (*fields.values(), track_id),
+    )
+    conn.commit()
+
+
+def queue_target_alert(conn, track_id: int) -> None:
+    """Queue one confirmation alert; repeated confirmations are ignored."""
+    conn.execute("INSERT OR IGNORE INTO alert_outbox (track_id) VALUES (?)", (track_id,))
+    conn.commit()
+
+
+def pending_target_alerts(conn, limit: int = 10) -> list[dict]:
+    return _rows(
+        conn,
+        "SELECT * FROM alert_outbox WHERE sent_at IS NULL ORDER BY created_at, track_id LIMIT ?",
+        (limit,),
+    )
+
+
+def mark_target_alert_sent(conn, track_id: int) -> None:
+    conn.execute(
+        "UPDATE alert_outbox SET sent_at = datetime('now'), last_error = NULL WHERE track_id = ?",
+        (track_id,),
+    )
+    conn.commit()
+
+
+def mark_target_alert_error(conn, track_id: int, error: str) -> None:
+    conn.execute(
+        "UPDATE alert_outbox SET last_error = ? WHERE track_id = ?",
+        (error[:500], track_id),
     )
     conn.commit()
 

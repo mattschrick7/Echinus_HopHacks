@@ -160,4 +160,6 @@ def _update(conn, track: dict, prediction, fix: Fix, t_ms: int, origin) -> int:
         changes["status"] = "active"
         changes["number"] = db.next_target_number(conn)
     db.update_track(conn, track["id"], changes)
+    if changes.get("status") == "active" and track["status"] != "active":
+        db.queue_target_alert(conn, track["id"])
     return track["id"]

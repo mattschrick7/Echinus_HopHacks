@@ -12,6 +12,12 @@ services:
       - "8000:8000"
     volumes:
       - echinus_data:/data
+    environment:
+      ECHINUS_SMS_ENABLED: ${ECHINUS_SMS_ENABLED:-0}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      TWILIO_TO_NUMBER: ${TWILIO_TO_NUMBER:-}
     restart: unless-stopped
 
   # Pretends to be a hub with a handful of nodes flying targets past them.
